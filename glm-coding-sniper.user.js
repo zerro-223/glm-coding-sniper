@@ -365,6 +365,264 @@
         SNIPER.debug('反检测模块已激活');
     };
 
+    // ============ 并发重试引擎 ============
+    SNIPER.engine = {
+        _controllers: [],
+        _running: false,
+        _turboTimeout: null,
+        _pickupTimeout: null,
+    };
+
+    // 计算自适应间隔
+    SNIPER.engine._getInterval = function (retryCount) {
+        const cfg = SNIPER.config;
+        if (retryCount < cfg.burstCount) return 0;
+        const base = retryCount < 100 ? cfg.fastInterval : cfg.slowInterval;
+        const jitter = base * cfg.jitterRatio * (Math.random() * 2 - 1);  // ±30%
+        return Math.max(0, Math.floor(base + jitter));
+    };
+
+    // 当前并发数
+    SNIPER.engine._getConcurrency = function () {
+        const elapsed = Date.now() - STATE.startTime;
+        if (elapsed < SNIPER.config.turboDuration) {
+            return SNIPER.config.turboConcurrency;
+        }
+        return SNIPER.config.normalConcurrency;
+    };
+
+    // 发送单个 preview 请求（带 AbortController）
+    SNIPER.engine._sendPreview = function (controller) {
+        if (!STATE.capturedParams) {
+            return Promise.reject(new Error('无捕获的请求参数'));
+        }
+        const params = STATE.capturedParams;
+        const headers = {
+            'Content-Type': 'application/json',
+            ...SNIPER.antidetect.randomizeHeaders(),
+        };
+        return fetch(params.url, {
+            method: params.method,
+            headers: headers,
+            body: typeof params.body === 'string' ? params.body : JSON.stringify(params.body),
+            signal: controller.signal,
+            credentials: 'include',
+        }).then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        }).then(data => {
+            // 检查返回是否包含 bizId
+            const bizId = data.bizId || data.biz_id || data.orderId || data.order_id
+                || (data.data && (data.data.bizId || data.data.biz_id));
+            if (bizId) {
+                SNIPER.success(`获得 bizId: ${bizId}`);
+                return { bizId, data };
+            }
+            // 也检查是否售罄
+            if (data.soldOut || data.isSoldOut || data.status === 'SOLD_OUT') {
+                throw new Error('SOLD_OUT');
+            }
+            // 有其他错误信息
+            if (data.msg || data.message) {
+                throw new Error(data.msg || data.message);
+            }
+            throw new Error('NO_BIZ_ID');
+        });
+    };
+
+    // check 校验 bizId
+    SNIPER.engine._checkBizId = function (bizId) {
+        // 尝试常见的 check 端点
+        const baseUrl = STATE.capturedParams ? STATE.capturedParams.url : '';
+        const checkUrls = [
+            baseUrl.replace(/preview/gi, 'check'),
+            baseUrl.replace(/preview/gi, 'verify'),
+            '/api/check',
+            '/api/order/check',
+        ];
+        // 优先使用修改后的 URL
+        const checkUrl = checkUrls[0];
+
+        return fetch(checkUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...SNIPER.antidetect.randomizeHeaders(),
+            },
+            body: JSON.stringify({ bizId: bizId }),
+            credentials: 'include',
+        }).then(res => res.json()).then(data => {
+            const status = data.status || data.state || '';
+            if (status === 'OK' || status === 'SUCCESS' || status === 'ACTIVE' || data.valid === true) {
+                return { valid: true, data };
+            }
+            if (status === 'EXPIRE' || status === 'EXPIRED' || data.valid === false) {
+                return { valid: false, expired: true, data };
+            }
+            // 其他返回码则乐观认为有效
+            return { valid: true, data };
+        });
+    };
+
+    // 并发 race：任一成功即取消其它
+    SNIPER.engine._racePreview = function (concurrency) {
+        const controllers = [];
+        const promises = [];
+
+        for (let i = 0; i < concurrency; i++) {
+            const ctrl = new AbortController();
+            controllers.push(ctrl);
+            promises.push(SNIPER.engine._sendPreview(ctrl));
+        }
+
+        SNIPER.engine._controllers = controllers;
+
+        return Promise.race(promises).then(result => {
+            // 取消其余请求
+            controllers.forEach(c => { try { c.abort(); } catch (e) { /* ignore */ } });
+            return result;
+        }).catch(err => {
+            controllers.forEach(c => { try { c.abort(); } catch (e) { /* ignore */ } });
+            throw err;
+        });
+    };
+
+    // 主循环
+    SNIPER.engine._loop = async function () {
+        const cfg = SNIPER.config;
+        STATE.retryCount = 0;
+
+        while (SNIPER.engine._running && STATE.retryCount < cfg.maxRetries) {
+            const concurrency = SNIPER.engine._getConcurrency();
+            const interval = SNIPER.engine._getInterval(STATE.retryCount);
+
+            try {
+                SNIPER.debug(`第 ${STATE.retryCount + 1} 次尝试 (${concurrency}路并发, 间隔${interval}ms)`);
+                const { bizId } = await SNIPER.engine._racePreview(concurrency);
+
+                // preview 成功 → check 校验
+                SNIPER.info(`preview 成功，bizId: ${bizId}，开始 check 校验...`);
+                const checkResult = await SNIPER.engine._checkBizId(bizId);
+
+                if (checkResult.valid) {
+                    STATE.bizId = bizId;
+                    SNIPER.success(`✅ 抢购成功! bizId: ${bizId}`);
+                    SNIPER.engine._running = false;
+                    SNIPER.updateStatus('success', '✅ 抢购成功! 请立即扫码支付');
+                    SNIPER.engine._onSuccess(bizId, checkResult.data);
+                    return;
+                } else if (checkResult.expired) {
+                    SNIPER.warn('bizId 已过期，重试中...');
+                }
+            } catch (err) {
+                if (err.message === 'SOLD_OUT') {
+                    SNIPER.debug('售罄，继续重试...');
+                } else if (err.name === 'AbortError') {
+                    // 被 race 取消，正常
+                } else {
+                    SNIPER.debug(`请求失败: ${err.message}`);
+                }
+            }
+
+            STATE.retryCount++;
+
+            // 等待间隔
+            if (interval > 0 && SNIPER.engine._running) {
+                await new Promise(r => setTimeout(r, interval));
+            }
+        }
+
+        if (STATE.retryCount >= cfg.maxRetries) {
+            SNIPER.warn('达到最大重试次数');
+        }
+        if (SNIPER.engine._running) {
+            SNIPER.updateStatus('failed', '❌ 抢购未成功');
+            SNIPER.engine._running = false;
+        }
+    };
+
+    // 成功回调
+    SNIPER.engine._onSuccess = function (bizId, data) {
+        // 播放提示音
+        try {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            [800, 1000, 1200].forEach((freq, i) => {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.frequency.value = freq;
+                osc.type = 'square';
+                gain.gain.value = 0.3;
+                osc.start(audioCtx.currentTime + i * 0.15);
+                osc.stop(audioCtx.currentTime + i * 0.15 + 0.1);
+            });
+        } catch (e) { /* ignore */ }
+
+        // 浏览器通知
+        if (typeof GM_notification === 'function') {
+            GM_notification({
+                title: 'GLM 抢购成功!',
+                text: `bizId: ${bizId}\n请立即完成支付!`,
+                timeout: 10000,
+            });
+        } else if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('GLM 抢购成功!', {
+                body: `bizId: ${bizId}\n请立即完成支付!`,
+            });
+        }
+
+        // 触发支付弹窗恢复 (Task 8 将添加 paymentRecovery 模块)
+        if (SNIPER.paymentRecovery) SNIPER.paymentRecovery.attempt(bizId);
+    };
+
+    // 启动引擎
+    SNIPER.engine.start = function () {
+        if (SNIPER.engine._running) {
+            SNIPER.warn('引擎已在运行中');
+            return;
+        }
+        if (!STATE.capturedParams) {
+            SNIPER.warn('未获取到请求参数，请先在页面上点击一次购买按钮');
+            SNIPER.updateStatus('idle', '⚠️ 请先在页面点击购买按钮以捕获参数');
+            return;
+        }
+
+        SNIPER.engine._running = true;
+        STATE.startTime = Date.now();
+        STATE.retryCount = 0;
+        STATE.status = 'running';
+        SNIPER.updateStatus('running', '🔴 抢购中...');
+
+        // 启动拾漏定时器 (5分钟后自动停止)
+        SNIPER.engine._pickupTimeout = setTimeout(() => {
+            if (SNIPER.engine._running) {
+                SNIPER.warn('捡漏窗口结束，停止重试');
+                SNIPER.engine.stop();
+            }
+        }, SNIPER.config.pickupWindowMs);
+
+        // 启动主循环
+        SNIPER.engine._loop().catch(err => {
+            SNIPER.error('引擎异常: ' + err.message);
+            SNIPER.engine.stop();
+        });
+
+        SNIPER.info(`引擎已启动 (${SNIPER.engine._getConcurrency()}路并发)`);
+    };
+
+    // 停止引擎
+    SNIPER.engine.stop = function () {
+        SNIPER.engine._running = false;
+        clearTimeout(SNIPER.engine._pickupTimeout);
+        SNIPER.engine._controllers.forEach(c => {
+            try { c.abort(); } catch (e) { /* ignore */ }
+        });
+        SNIPER.engine._controllers = [];
+        SNIPER.updateStatus('idle', '已停止');
+        SNIPER.info('引擎已停止');
+    };
+
     // ============ 控制面板 UI ============
     SNIPER.ui = {};
 
