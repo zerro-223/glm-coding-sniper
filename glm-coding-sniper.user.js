@@ -51,5 +51,52 @@
     SNIPER.config = Object.assign({}, DEFAULT_CONFIG);
     SNIPER.state = STATE;
 
+    // ============ 日志系统 ============
+    const LOG_LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3, SUCCESS: 4 };
+    const MAX_LOG_ENTRIES = 50;
+
+    SNIPER.log = function (level, msg) {
+        const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+        const entry = { time, level, msg };
+        STATE.logs.unshift(entry);
+        if (STATE.logs.length > MAX_LOG_ENTRIES) STATE.logs.pop();
+        const prefix = {
+            DEBUG: '🔍', INFO: 'ℹ️', WARN: '⚠️', ERROR: '❌', SUCCESS: '✅'
+        }[level] || '📝';
+        console.log(`[GLM抢购 ${time}] ${prefix} ${msg}`);
+        // 触发日志面板更新（如果已创建）
+        if (SNIPER._logCallback) SNIPER._logCallback(entry);
+    };
+
+    // 便捷方法
+    ['DEBUG','INFO','WARN','ERROR','SUCCESS'].forEach(l => {
+        SNIPER[l.toLowerCase()] = (msg) => SNIPER.log(l, msg);
+    });
+
+    // ============ 配置持久化 ============
+    SNIPER.saveConfig = function () {
+        try {
+            localStorage.setItem('glm_sniper_config', JSON.stringify(SNIPER.config));
+            SNIPER.debug('配置已保存');
+        } catch (e) {
+            SNIPER.warn('配置保存失败: ' + e.message);
+        }
+    };
+
+    SNIPER.loadConfig = function () {
+        try {
+            const saved = localStorage.getItem('glm_sniper_config');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                Object.assign(SNIPER.config, parsed);
+                SNIPER.info('已加载保存的配置');
+                return true;
+            }
+        } catch (e) {
+            SNIPER.warn('配置加载失败，使用默认配置');
+        }
+        return false;
+    };
+
     console.log('[GLM抢购] 脚本已注入 (骨架)');
 })();
