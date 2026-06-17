@@ -98,6 +98,217 @@
         return false;
     };
 
+    // ============ 请求拦截器 ============
+    SNIPER.intercept = {
+        _origJSONParse: JSON.parse,
+        _origFetch: window.fetch,
+        _origXHRSend: XMLHttpRequest.prototype.send,
+        _observers: [],
+        _active: false,
+    };
+
+    // 深度修改 JSON 数据：将售罄/禁用标记改为 false
+    SNIPER.intercept._deepPatch = function (obj, depth = 0) {
+        if (!obj || typeof obj !== 'object' || depth > 20) return;
+        if (Array.isArray(obj)) {
+            obj.forEach(item => SNIPER.intercept._deepPatch(item, depth + 1));
+            return;
+        }
+        // 强制改为 false 的属性
+        const FALSE_KEYS = ['isSoldOut', 'soldOut', 'isServerBusy', 'serverBusy'];
+        for (const key of FALSE_KEYS) {
+            if (key in obj && obj[key] !== false) {
+                obj[key] = false;
+                SNIPER.debug(`JSON patch: ${key} → false`);
+            }
+        }
+        // disabled 需要上下文判断（对象包含商品标识才改）
+        if ('disabled' in obj && obj.disabled !== false) {
+            const hasProductMarker = obj.price !== undefined
+                || obj.productId !== undefined
+                || obj.planId !== undefined
+                || obj.id !== undefined;
+            if (hasProductMarker) {
+                obj.disabled = false;
+                SNIPER.debug(`JSON patch: disabled → false (商品上下文)`);
+            }
+        }
+        // 递归处理子对象
+        for (const key in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                SNIPER.intercept._deepPatch(obj[key], depth + 1);
+            }
+        }
+    };
+
+    // JSON.parse 劫持
+    SNIPER.intercept._hijackJSON = function () {
+        const self = SNIPER.intercept;
+        JSON.parse = function (text, reviver) {
+            const result = self._origJSONParse.call(JSON, text, reviver);
+            try {
+                self._deepPatch(result);
+            } catch (e) {
+                // 静默失败，不破坏原始行为
+            }
+            return result;
+        };
+        // 伪装成原生
+        JSON.parse.toString = function () { return 'function parse() { [native code] }'; };
+    };
+
+    // fetch 劫持
+    SNIPER.intercept._hijackFetch = function () {
+        const self = SNIPER.intercept;
+        window.fetch = function (input, init) {
+            // 捕获请求参数
+            const url = typeof input === 'string' ? input : (input.url || input.href || '');
+            if (url.includes('preview') || url.includes('order') || url.includes('purchase')
+                || url.includes('subscribe') || url.includes('create') || url.includes('pay')) {
+                const body = init && init.body;
+                if (body) {
+                    try {
+                        const parsed = typeof body === 'string' ? JSON.parse(body) : body;
+                        STATE.capturedParams = {
+                            url: url,
+                            body: parsed,
+                            headers: init && init.headers ? { ...init.headers } : {},
+                            method: (init && init.method) || 'POST',
+                            capturedAt: Date.now(),
+                        };
+                        SNIPER.info(`捕获请求: ${url}`);
+                        SNIPER.debug('请求参数: ' + JSON.stringify(parsed).substring(0, 200));
+                    } catch (e) {
+                        STATE.capturedParams = {
+                            url, body,
+                            method: (init && init.method) || 'POST',
+                            capturedAt: Date.now(),
+                        };
+                    }
+                }
+            }
+
+            // 发起原始请求，但拦截响应
+            const promise = self._origFetch.call(window, input, init);
+            return promise.then(response => {
+                // 克隆响应以读取 JSON
+                if (response && response.clone && response.headers
+                    && response.headers.get('content-type')?.includes('json')) {
+                    const clone = response.clone();
+                    clone.json().then(data => {
+                        self._deepPatch(data);
+                    }).catch(() => {});
+                }
+                return response;
+            });
+        };
+        window.fetch.toString = function () { return 'function fetch() { [native code] }'; };
+    };
+
+    // XMLHttpRequest 劫持
+    SNIPER.intercept._hijackXHR = function () {
+        const self = SNIPER.intercept;
+        XMLHttpRequest.prototype.send = function (body) {
+            const xhr = this;
+            // 捕获请求
+            const url = (xhr._url || '');
+            if (url.includes('preview') || url.includes('order') || url.includes('purchase')
+                || url.includes('subscribe') || url.includes('create') || url.includes('pay')) {
+                if (body) {
+                    try {
+                        const parsed = typeof body === 'string' ? JSON.parse(body) : body;
+                        STATE.capturedParams = {
+                            url,
+                            body: parsed,
+                            headers: {},
+                            method: xhr._method || 'POST',
+                            capturedAt: Date.now(),
+                        };
+                        SNIPER.info(`捕获 XHR: ${url}`);
+                    } catch (e) { /* ignore */ }
+                }
+            }
+            // 拦截响应
+            const origOnReady = xhr.onreadystatechange;
+            xhr.onreadystatechange = function (ev) {
+                if (xhr.readyState === 4 && xhr.responseType === '' || xhr.responseType === 'text') {
+                    try {
+                        const data = JSON.parse(xhr.responseText);
+                        self._deepPatch(data);
+                        // 注意：无法直接修改 responseText，但页面会通过 JSON.parse 解析
+                        // JSON.parse 已被劫持，会自动 patch
+                    } catch (e) { /* ignore */ }
+                }
+                if (origOnReady) origOnReady.call(xhr, ev);
+            };
+            return self._origXHRSend.call(this, body);
+        };
+        XMLHttpRequest.prototype.send.toString = function () { return 'function send() { [native code] }'; };
+
+        // 也需要劫持 open 来捕获 URL
+        const origOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function (method, url) {
+            this._url = url;
+            this._method = method;
+            return origOpen.apply(this, arguments);
+        };
+    };
+
+    // MutationObserver: 自动移除 disabled 属性
+    SNIPER.intercept._installDOMObserver = function () {
+        const observer = new MutationObserver((mutations) => {
+            mutations.forEach(m => {
+                m.addedNodes.forEach(node => {
+                    if (node.nodeType !== 1) return;
+                    // 移除新增节点的 disabled 属性
+                    node.querySelectorAll('[disabled], .is-disabled, .disabled').forEach(el => {
+                        el.removeAttribute('disabled');
+                        el.classList.remove('is-disabled', 'disabled');
+                    });
+                    if (node.matches && (node.hasAttribute('disabled')
+                        || node.classList.contains('is-disabled'))) {
+                        node.removeAttribute('disabled');
+                        node.classList.remove('is-disabled', 'disabled');
+                    }
+                });
+                // 处理属性变化
+                if (m.type === 'attributes' && m.attributeName === 'disabled'
+                    && m.target.nodeType === 1) {
+                    m.target.removeAttribute('disabled');
+                }
+            });
+        });
+        observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['disabled'],
+        });
+        SNIPER.intercept._observers.push(observer);
+    };
+
+    // 安装全部拦截
+    SNIPER.intercept.install = function () {
+        if (SNIPER.intercept._active) return;
+        SNIPER.intercept._hijackJSON();
+        SNIPER.intercept._hijackFetch();
+        SNIPER.intercept._hijackXHR();
+        SNIPER.intercept._installDOMObserver();
+        SNIPER.intercept._active = true;
+        SNIPER.success('拦截器已激活 (JSON/Fetch/XHR/DOM)');
+    };
+
+    // 卸载（用于调试）
+    SNIPER.intercept.uninstall = function () {
+        JSON.parse = SNIPER.intercept._origJSONParse;
+        window.fetch = SNIPER.intercept._origFetch;
+        XMLHttpRequest.prototype.send = SNIPER.intercept._origXHRSend;
+        SNIPER.intercept._observers.forEach(o => o.disconnect());
+        SNIPER.intercept._observers = [];
+        SNIPER.intercept._active = false;
+        SNIPER.warn('拦截器已卸载');
+    };
+
     // ============ 控制面板 UI ============
     SNIPER.ui = {};
 
