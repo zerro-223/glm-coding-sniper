@@ -369,7 +369,6 @@
     SNIPER.engine = {
         _controllers: [],
         _running: false,
-        _turboTimeout: null,
         _pickupTimeout: null,
     };
 
@@ -391,7 +390,7 @@
         return SNIPER.config.normalConcurrency;
     };
 
-    // 发送单个 preview 请求（带 AbortController）
+    // 发送单个 preview 请求（带 AbortController + 10s 超时）
     SNIPER.engine._sendPreview = function (controller) {
         if (!STATE.capturedParams) {
             return Promise.reject(new Error('无捕获的请求参数'));
@@ -401,6 +400,8 @@
             'Content-Type': 'application/json',
             ...SNIPER.antidetect.randomizeHeaders(),
         };
+        // 单请求超时：10 秒无响应则 abort，防止挂起阻塞 race
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
         return fetch(params.url, {
             method: params.method,
             headers: headers,
@@ -427,12 +428,11 @@
                 throw new Error(data.msg || data.message);
             }
             throw new Error('NO_BIZ_ID');
-        });
+        }).finally(() => clearTimeout(timeoutId));
     };
 
-    // check 校验 bizId
+    // check 校验 bizId（遍历 fallback URL）
     SNIPER.engine._checkBizId = function (bizId) {
-        // 尝试常见的 check 端点
         const baseUrl = STATE.capturedParams ? STATE.capturedParams.url : '';
         const checkUrls = [
             baseUrl.replace(/preview/gi, 'check'),
@@ -440,28 +440,39 @@
             '/api/check',
             '/api/order/check',
         ];
-        // 优先使用修改后的 URL
-        const checkUrl = checkUrls[0];
 
-        return fetch(checkUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...SNIPER.antidetect.randomizeHeaders(),
-            },
-            body: JSON.stringify({ bizId: bizId }),
-            credentials: 'include',
-        }).then(res => res.json()).then(data => {
-            const status = data.status || data.state || '';
-            if (status === 'OK' || status === 'SUCCESS' || status === 'ACTIVE' || data.valid === true) {
+        // 递归尝试：每个 URL 依次尝试，网络错误则 fallback 到下一个
+        const tryCheck = (index) => {
+            if (index >= checkUrls.length) {
+                SNIPER.warn('所有 check 端点均不可达，乐观认为有效');
+                return Promise.resolve({ valid: true, data: {} });
+            }
+            const checkUrl = checkUrls[index];
+            return fetch(checkUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...SNIPER.antidetect.randomizeHeaders(),
+                },
+                body: JSON.stringify({ bizId: bizId }),
+                credentials: 'include',
+            }).then(res => res.json()).then(data => {
+                const status = data.status || data.state || '';
+                if (status === 'OK' || status === 'SUCCESS' || status === 'ACTIVE' || data.valid === true) {
+                    return { valid: true, data };
+                }
+                if (status === 'EXPIRE' || status === 'EXPIRED' || data.valid === false) {
+                    return { valid: false, expired: true, data };
+                }
+                // 其他返回码则乐观认为有效
                 return { valid: true, data };
-            }
-            if (status === 'EXPIRE' || status === 'EXPIRED' || data.valid === false) {
-                return { valid: false, expired: true, data };
-            }
-            // 其他返回码则乐观认为有效
-            return { valid: true, data };
-        });
+            }).catch(err => {
+                SNIPER.debug(`check URL [${index}] 失败: ${err.message}，尝试下一个`);
+                return tryCheck(index + 1);
+            });
+        };
+
+        return tryCheck(0);
     };
 
     // 并发 race：任一成功即取消其它
@@ -526,9 +537,12 @@
 
             STATE.retryCount++;
 
-            // 等待间隔
+            // 可中断等待：每 50ms 检查 _running，stop() 可即时生效
             if (interval > 0 && SNIPER.engine._running) {
-                await new Promise(r => setTimeout(r, interval));
+                const end = Date.now() + interval;
+                while (SNIPER.engine._running && Date.now() < end) {
+                    await new Promise(r => setTimeout(r, Math.min(50, end - Date.now())));
+                }
             }
         }
 
