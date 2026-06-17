@@ -218,7 +218,7 @@
                 cursor: pointer;
                 font-size: 12px;
                 font-weight: 600;
-                transition: all 0.2s;
+                transition: transform 0.2s, box-shadow 0.2s;
             }
             .btn:hover { transform: translateY(-1px); }
             .btn-primary {
@@ -298,7 +298,7 @@
                     🟢 等待操作...
                 </div>
                 <div class="log-area" id="log-area">
-                    <div style="color:#555;">日志输出...</div>
+                    <div data-placeholder style="color:#555;">日志输出...</div>
                 </div>
                 <div class="btn-row">
                     <button class="btn btn-primary" id="btn-monitor">▶ 开始监控</button>
@@ -387,6 +387,22 @@
         const host = SNIPER.ui._dom.host;
         let dragging = false, startX, startY, origX, origY;
 
+        const onMouseMove = function (e) {
+            if (!dragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            host.style.right = 'auto';
+            host.style.bottom = 'auto';
+            host.style.left = (origX + dx) + 'px';
+            host.style.top = (origY + dy) + 'px';
+        };
+
+        const onMouseUp = function () {
+            dragging = false;
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+        };
+
         header.addEventListener('mousedown', (e) => {
             dragging = true;
             startX = e.clientX;
@@ -395,22 +411,14 @@
             origX = rect.left;
             origY = rect.top;
             e.preventDefault();
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
         });
-
-        document.addEventListener('mousemove', (e) => {
-            if (!dragging) return;
-            const dx = e.clientX - startX;
-            const dy = e.clientY - startY;
-            host.style.right = 'auto';
-            host.style.bottom = 'auto';
-            host.style.left = (origX + dx) + 'px';
-            host.style.top = (origY + dy) + 'px';
-        });
-
-        document.addEventListener('mouseup', () => { dragging = false; });
     };
 
     SNIPER.ui.createToggleButton = function () {
+        // 检查是否已存在，避免重复创建
+        if (document.getElementById('glm-sniper-toggle')) return;
         const btn = document.createElement('div');
         btn.id = 'glm-sniper-toggle';
         btn.innerHTML = '🔥';
@@ -435,6 +443,9 @@
     SNIPER._logCallback = function (entry) {
         const logArea = SNIPER.ui._dom && SNIPER.ui._dom.logArea;
         if (!logArea) return;
+        // 首次真实日志时清除占位符
+        const placeholder = logArea.querySelector('[data-placeholder]');
+        if (placeholder) placeholder.remove();
         const div = document.createElement('div');
         div.className = `log-entry ${entry.level}`;
         div.innerHTML = `<span class="t">${entry.time}</span> ${entry.msg}`;
@@ -498,23 +509,29 @@
 
         // 也尝试读取按钮文字识别套餐
         const buyBtnSelectors = 'button, a, .btn, [class*="buy"], [class*="purchase"]';
-        document.querySelectorAll(buyBtnSelectors).forEach(btn => {
-            const text = btn.textContent.trim();
-            if (text.includes('购买') || text.includes('订阅') || text.includes('抢购')) {
-                const parentText = btn.closest('div,section,li')?.textContent?.trim()?.substring(0, 50);
-                if (parentText) {
-                    for (const name of knownPlans) {
-                        if (parentText.includes(name)) {
-                            plans.add(name);
-                            const opt = document.createElement('option');
-                            opt.value = name;
-                            opt.textContent = name + ' (从按钮识别)';
-                            sel.appendChild(opt);
+        const addedOptions = new Set();
+        // 记录已有 option 的 value，避免重复添加
+        for (const opt of sel.options) { addedOptions.add(opt.value); }
+        try {
+            document.querySelectorAll(buyBtnSelectors).forEach(btn => {
+                const text = btn.textContent.trim();
+                if (text.includes('购买') || text.includes('订阅') || text.includes('抢购')) {
+                    const parentText = btn.closest('div,section,li')?.textContent?.trim()?.substring(0, 50);
+                    if (parentText) {
+                        for (const name of knownPlans) {
+                            if (parentText.includes(name) && !addedOptions.has(name)) {
+                                plans.add(name);
+                                addedOptions.add(name);
+                                const opt = document.createElement('option');
+                                opt.value = name;
+                                opt.textContent = name + ' (从按钮识别)';
+                                sel.appendChild(opt);
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
+        } catch (e) { /* ignore button-recognition errors */ }
 
         const count = plans.size;
         SNIPER.info(`扫描完成，发现 ${count} 个可能的套餐`);
