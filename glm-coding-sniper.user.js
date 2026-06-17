@@ -103,6 +103,10 @@
         _origJSONParse: JSON.parse,
         _origFetch: window.fetch,
         _origXHRSend: XMLHttpRequest.prototype.send,
+        _origXHROpen: null,
+        _origJSONParseToString: null,
+        _origFetchToString: null,
+        _origXHRSendToString: null,
         _observers: [],
         _active: false,
     };
@@ -144,6 +148,7 @@
     // JSON.parse 劫持
     SNIPER.intercept._hijackJSON = function () {
         const self = SNIPER.intercept;
+        self._origJSONParseToString = JSON.parse.toString;
         JSON.parse = function (text, reviver) {
             const result = self._origJSONParse.call(JSON, text, reviver);
             try {
@@ -160,6 +165,7 @@
     // fetch 劫持
     SNIPER.intercept._hijackFetch = function () {
         const self = SNIPER.intercept;
+        self._origFetchToString = window.fetch.toString;
         window.fetch = function (input, init) {
             // 捕获请求参数
             const url = typeof input === 'string' ? input : (input.url || input.href || '');
@@ -188,19 +194,9 @@
                 }
             }
 
-            // 发起原始请求，但拦截响应
-            const promise = self._origFetch.call(window, input, init);
-            return promise.then(response => {
-                // 克隆响应以读取 JSON
-                if (response && response.clone && response.headers
-                    && response.headers.get('content-type')?.includes('json')) {
-                    const clone = response.clone();
-                    clone.json().then(data => {
-                        self._deepPatch(data);
-                    }).catch(() => {});
-                }
-                return response;
-            });
+            // JSON.parse is already hijacked globally, so response patching
+            // happens automatically when the caller parses the response body.
+            return self._origFetch.call(window, input, init);
         };
         window.fetch.toString = function () { return 'function fetch() { [native code] }'; };
     };
@@ -208,6 +204,7 @@
     // XMLHttpRequest 劫持
     SNIPER.intercept._hijackXHR = function () {
         const self = SNIPER.intercept;
+        self._origXHRSendToString = XMLHttpRequest.prototype.send.toString;
         XMLHttpRequest.prototype.send = function (body) {
             const xhr = this;
             // 捕获请求
@@ -231,7 +228,7 @@
             // 拦截响应
             const origOnReady = xhr.onreadystatechange;
             xhr.onreadystatechange = function (ev) {
-                if (xhr.readyState === 4 && xhr.responseType === '' || xhr.responseType === 'text') {
+                if (xhr.readyState === 4 && (xhr.responseType === '' || xhr.responseType === 'text')) {
                     try {
                         const data = JSON.parse(xhr.responseText);
                         self._deepPatch(data);
@@ -247,6 +244,7 @@
 
         // 也需要劫持 open 来捕获 URL
         const origOpen = XMLHttpRequest.prototype.open;
+        self._origXHROpen = origOpen;
         XMLHttpRequest.prototype.open = function (method, url) {
             this._url = url;
             this._method = method;
@@ -300,12 +298,25 @@
 
     // 卸载（用于调试）
     SNIPER.intercept.uninstall = function () {
-        JSON.parse = SNIPER.intercept._origJSONParse;
-        window.fetch = SNIPER.intercept._origFetch;
-        XMLHttpRequest.prototype.send = SNIPER.intercept._origXHRSend;
-        SNIPER.intercept._observers.forEach(o => o.disconnect());
-        SNIPER.intercept._observers = [];
-        SNIPER.intercept._active = false;
+        const self = SNIPER.intercept;
+        JSON.parse = self._origJSONParse;
+        if (self._origJSONParseToString) {
+            JSON.parse.toString = self._origJSONParseToString;
+        }
+        window.fetch = self._origFetch;
+        if (self._origFetchToString) {
+            window.fetch.toString = self._origFetchToString;
+        }
+        XMLHttpRequest.prototype.send = self._origXHRSend;
+        if (self._origXHRSendToString) {
+            XMLHttpRequest.prototype.send.toString = self._origXHRSendToString;
+        }
+        if (self._origXHROpen) {
+            XMLHttpRequest.prototype.open = self._origXHROpen;
+        }
+        self._observers.forEach(o => o.disconnect());
+        self._observers = [];
+        self._active = false;
         SNIPER.warn('拦截器已卸载');
     };
 
