@@ -320,6 +320,51 @@
         SNIPER.warn('拦截器已卸载');
     };
 
+    // ============ 反检测模块 ============
+    SNIPER.antidetect = {
+        _active: false,
+    };
+
+    SNIPER.antidetect.randomizeHeaders = function () {
+        const languages = ['zh-CN', 'zh-CN,zh;q=0.9', 'zh-CN,zh;q=0.9,en;q=0.8',
+            'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7'];
+        const platforms = ['Win32', 'Win32', 'Win32', 'MacIntel'];
+        return {
+            'X-Request-Id': 'req_' + Math.random().toString(36).substring(2, 15)
+                + Math.random().toString(36).substring(2, 15),
+            'X-Timestamp': String(Date.now() + Math.floor((Math.random() - 0.5) * 4000)),
+            'Accept-Language': languages[Math.floor(Math.random() * languages.length)],
+            'Sec-Ch-Ua-Platform': platforms[Math.floor(Math.random() * platforms.length)],
+        };
+    };
+
+    SNIPER.antidetect.install = function () {
+        if (SNIPER.antidetect._active) return;
+
+        // 伪装原生 toString（fetch 和 XHR 已在拦截器中伪装）
+        const origFnToString = Function.prototype.toString;
+        const NATIVE_PATTERNS = [
+            { fn: 'fetch', template: 'function fetch() { [native code] }' },
+            { fn: 'XMLHttpRequest.prototype.send', template: 'function send() { [native code] }' },
+            { fn: 'JSON.parse', template: 'function parse() { [native code] }' },
+        ];
+
+        // 劫持 Function.prototype.toString
+        Function.prototype.toString = function () {
+            // 检查是否是我们劫持过的函数
+            if (this === window.fetch) return 'function fetch() { [native code] }';
+            if (this === XMLHttpRequest.prototype.send) return 'function send() { [native code] }';
+            if (this === JSON.parse) return 'function parse() { [native code] }';
+            return origFnToString.call(this);
+        };
+        Function.prototype.toString.toString = function () {
+            return 'function toString() { [native code] }';
+        };
+
+        SNIPER.antidetect._active = true;
+        SNIPER.debug('反检测模块已激活');
+    };
+
     // ============ 控制面板 UI ============
     SNIPER.ui = {};
 
