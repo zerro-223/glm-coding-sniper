@@ -567,12 +567,33 @@
                 }
             } catch (err) {
                 SNIPER.engine._failStreak++;
-                if (err.message === 'SOLD_OUT') {
+                var errMsg = err.message || '';
+                if (errMsg === 'SOLD_OUT') {
                     SNIPER.debug('售罄，继续重试...');
                 } else if (err.name === 'AbortError') {
                     // 被 race 取消，正常
+                } else if (errMsg.indexOf('Ticket已被使用') !== -1 || errMsg.indexOf('ticket') !== -1) {
+                    // Ticket 一次性，需刷新验证码获取新 ticket
+                    SNIPER.warn('Ticket 已失效，等待新验证码...');
+                    SNIPER.updateStatus('running', '⏳ 等待新验证码 Ticket...');
+                    // 清空旧参数，触发重新捕获
+                    STATE.capturedParams = null;
+                    // 尝试点击页面上的刷新/重新验证按钮
+                    SNIPER.captchaMonitor._refreshTicket();
+                    // 等待新参数被拦截器捕获（最多 30s）
+                    var waitStart = Date.now();
+                    while (!STATE.capturedParams && SNIPER.engine._running && (Date.now() - waitStart) < 30000) {
+                        await new Promise(function (r) { return setTimeout(r, 500); });
+                    }
+                    if (STATE.capturedParams) {
+                        SNIPER.success('已捕获新 Ticket，继续抢购');
+                        SNIPER.updateStatus('running', '抢购中...');
+                        SNIPER.engine._failStreak = 0;
+                    } else {
+                        SNIPER.warn('等待新 Ticket 超时，重试...');
+                    }
                 } else {
-                    SNIPER.debug(`请求失败: ${err.message}`);
+                    SNIPER.debug('请求失败: ' + errMsg);
                 }
             }
 
@@ -1040,6 +1061,45 @@
             SNIPER.engine._captchaPaused = false;
             SNIPER.info('引擎已恢复');
             SNIPER.updateStatus('running', '抢购中...');
+        }
+    };
+
+    // 尝试触发页面重新生成 Ticket（点击刷新验证码 / 重新下单）
+    SNIPER.captchaMonitor._refreshTicket = function () {
+        SNIPER.info('尝试刷新 Ticket...');
+        // 策略1：点击页面上的刷新/换一张验证码按钮
+        var refreshBtns = document.querySelectorAll(
+            '[class*="refresh"], [class*="reload"], [class*="retry"], ' +
+            'button[class*="captcha"], span[class*="captcha"], ' +
+            '.captcha-refresh, .captcha-reload, [title*="换一"], [title*="刷新"]'
+        );
+        for (var i = 0; i < refreshBtns.length; i++) {
+            refreshBtns[i].click();
+            SNIPER.debug('点击刷新按钮');
+            return;
+        }
+        // 策略2：尝试重新点击页面上的购买按钮触发新 Ticket
+        var buySelectors = [
+            'button[class*="buy"]', '[class*="purchase"]',
+            '.btn-buy', '.buy-btn', '[class*="subscribe"]',
+        ];
+        for (var j = 0; j < buySelectors.length; j++) {
+            var btns = document.querySelectorAll(buySelectors[j]);
+            for (var k = 0; k < btns.length; k++) {
+                var t = btns[k].textContent.trim();
+                if (t.indexOf('购买') !== -1 || t.indexOf('订阅') !== -1
+                    || t.indexOf('下单') !== -1 || t.indexOf('支付') !== -1) {
+                    btns[k].click();
+                    SNIPER.debug('点击购买按钮刷新 Ticket');
+                    return;
+                }
+            }
+        }
+        // 策略3：触发页面重新加载请求（点击套餐/切换周期）
+        var cycleSel = document.querySelector('#sel-cycle, select[name*="cycle"], select[name*="period"]');
+        if (cycleSel) {
+            cycleSel.dispatchEvent(new Event('change', { bubbles: true }));
+            SNIPER.debug('触发周期切换以刷新 Ticket');
         }
     };
 
