@@ -373,6 +373,7 @@
         _running: false,
         _pickupTimeout: null,
         _failStreak: 0,           // 连续失败计数（退避用）
+        _captchaPaused: false,    // 验证码暂停标记
     };
 
     // 计算自适应间隔
@@ -518,6 +519,12 @@
         STATE.retryCount = 0;
 
         while (SNIPER.engine._running && STATE.retryCount < cfg.maxRetries) {
+            // 验证码出现时暂停引擎，等解决后恢复
+            while (SNIPER.engine._captchaPaused && SNIPER.engine._running) {
+                await new Promise(function (r) { return setTimeout(r, 500); });
+            }
+            if (!SNIPER.engine._running) break;
+
             const concurrency = SNIPER.engine._getConcurrency();
             const interval = SNIPER.engine._getInterval(STATE.retryCount);
 
@@ -962,6 +969,7 @@
                     input.value = text;
                     input.dispatchEvent(new Event('input', { bubbles: true }));
                     input.dispatchEvent(new Event('change', { bubbles: true }));
+                    SNIPER.captchaMonitor._resumeEngine();
                     SNIPER.success('验证码已填入: ' + text);
                     // 尝试点击确认按钮
                     setTimeout(function () {
@@ -992,6 +1000,53 @@
             SNIPER.warn('OCR 失败: ' + (err.message || err));
             SNIPER.captchaMonitor._alertManual(captchaImg);
         });
+    };
+
+    // 暂停引擎（验证码出现时）
+    SNIPER.captchaMonitor._pauseEngine = function () {
+        if (!SNIPER.engine._captchaPaused) {
+            SNIPER.engine._captchaPaused = true;
+            // 取消所有进行中的请求
+            SNIPER.engine._controllers.forEach(function (c) {
+                try { c.abort(); } catch (e) { /* ignore */ }
+            });
+            SNIPER.engine._controllers = [];
+            SNIPER.warn('引擎已暂停（等待验证码）');
+            SNIPER.updateStatus('running', '⚠️ 验证码 — 引擎已暂停');
+        }
+    };
+
+    // 恢复引擎（验证码解决后）
+    SNIPER.captchaMonitor._resumeEngine = function () {
+        if (SNIPER.engine._captchaPaused) {
+            SNIPER.engine._captchaPaused = false;
+            SNIPER.info('引擎已恢复');
+            SNIPER.updateStatus('running', '抢购中...');
+        }
+    };
+
+    // 监听验证码元素被移除（用户手动关闭或 OCR 成功后页面自动移除）
+    SNIPER.captchaMonitor._removalObserver = null;
+    SNIPER.captchaMonitor._watchRemoval = function (captchaEl) {
+        if (SNIPER.captchaMonitor._removalObserver) {
+            SNIPER.captchaMonitor._removalObserver.disconnect();
+        }
+        var parent = captchaEl.parentElement;
+        if (!parent) return;
+        SNIPER.captchaMonitor._removalObserver = new MutationObserver(function (muts) {
+            muts.forEach(function (mut) {
+                for (var i = 0; i < mut.removedNodes.length; i++) {
+                    var removed = mut.removedNodes[i];
+                    if (removed === captchaEl || (removed.contains && removed.contains(captchaEl))) {
+                        SNIPER.captchaMonitor._resumeEngine();
+                        SNIPER.captchaMonitor._removalObserver.disconnect();
+                        SNIPER.captchaMonitor._removalObserver = null;
+                        return;
+                    }
+                }
+            });
+        });
+        SNIPER.captchaMonitor._removalObserver.observe(parent, { childList: true, subtree: true });
     };
 
     // 手动验证码提醒
@@ -1033,11 +1088,14 @@
                         if (captchaEl) break;
                     }
                     if (captchaEl) {
+                        // 暂停引擎，取消所有进行中的请求
+                        SNIPER.captchaMonitor._pauseEngine();
+                        // 监听验证码元素被移除 → 恢复引擎
+                        SNIPER.captchaMonitor._watchRemoval(captchaEl);
                         // 尝试 OCR 自动识别
                         if (captchaEl.tagName === 'IMG' || captchaEl.tagName === 'CANVAS') {
                             SNIPER.captchaMonitor._tryOCR(captchaEl);
                         } else {
-                            // 可能是个容器，找里面的 img
                             var innerImg = captchaEl.querySelector('img, canvas');
                             if (innerImg) {
                                 SNIPER.captchaMonitor._tryOCR(innerImg);
@@ -1063,6 +1121,11 @@
             SNIPER.captchaMonitor._observer.disconnect();
             SNIPER.captchaMonitor._observer = null;
         }
+        if (SNIPER.captchaMonitor._removalObserver) {
+            SNIPER.captchaMonitor._removalObserver.disconnect();
+            SNIPER.captchaMonitor._removalObserver = null;
+        }
+        SNIPER.engine._captchaPaused = false;
         SNIPER.captchaMonitor._watching = false;
     };
 
