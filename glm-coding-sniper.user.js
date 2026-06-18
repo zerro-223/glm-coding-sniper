@@ -1259,8 +1259,8 @@
         panel.innerHTML = `
             <div class="header" id="panel-header">
                 <div class="header-brand">
-                    <div class="header-icon">🎯</div>
-                    <h3>GLM<span>·抢购</span></h3>
+                    <div class="header-icon">🔥</div>
+                    <h3>GLM<span> 抢购</span></h3>
                 </div>
                 <div class="header-btns">
                     <button id="btn-min" title="最小化">─</button>
@@ -1268,61 +1268,31 @@
                 </div>
             </div>
             <div class="body" id="panel-body">
-                <div class="section">
-                    <div class="section-header">
-                        <span class="section-dot plan"></span>
-                        <span class="section-label">套餐设置</span>
-                    </div>
-                    <div class="row">
-                        <label>目标套餐</label>
-                        <select id="sel-plan">
-                            <option value="">自动检测</option>
-                        </select>
-                    </div>
-                    <div class="row">
-                        <label>付费周期</label>
-                        <select id="sel-cycle">
-                            <option value="monthly">连续包月</option>
-                            <option value="quarterly">连续包季 (9折)</option>
-                            <option value="yearly">连续包年 (8折)</option>
-                        </select>
-                    </div>
+                <div class="row">
+                    <label>开抢</label>
+                    <input id="inp-time" type="text" value="${SNIPER.config.triggerTime}" placeholder="09:59:58">
                 </div>
-                <div class="section">
-                    <div class="section-header">
-                        <span class="section-dot timer"></span>
-                        <span class="section-label">定时设置</span>
-                    </div>
-                    <div class="row">
-                        <label>开抢时间</label>
-                        <input id="inp-time" type="text" value="${SNIPER.config.triggerTime}" placeholder="09:59:58">
-                    </div>
-                    <div class="row">
-                        <label>提前触发</label>
-                        <input id="inp-lead" type="number" value="${SNIPER.config.leadMs}" placeholder="200" step="10">
-                        <span class="row-unit">ms</span>
-                    </div>
+                <div class="row">
+                    <label>套餐</label>
+                    <select id="sel-plan">
+                        <option value="">自动检测</option>
+                    </select>
                 </div>
-                <div class="section">
-                    <div class="section-header">
-                        <span class="section-dot concur"></span>
-                        <span class="section-label">并发设置</span>
-                    </div>
-                    <div class="row">
-                        <label>极速并发</label>
-                        <input id="inp-turbo" type="number" value="${SNIPER.config.turboConcurrency}" min="1" max="20" step="1">
-                        <span class="row-unit">路</span>
-                    </div>
-                    <div class="row">
-                        <label>普通并发</label>
-                        <input id="inp-normal" type="number" value="${SNIPER.config.normalConcurrency}" min="1" max="10" step="1">
-                        <span class="row-unit">路</span>
-                    </div>
-                    <div class="row">
-                        <label>最大重试</label>
-                        <input id="inp-retries" type="number" value="${SNIPER.config.maxRetries}" min="10" max="10000" step="10">
-                        <span class="row-unit">次</span>
-                    </div>
+                <div class="row">
+                    <label>周期</label>
+                    <select id="sel-cycle">
+                        <option value="monthly">连续包月</option>
+                        <option value="quarterly">连续包季 (9折)</option>
+                        <option value="yearly">连续包年 (8折)</option>
+                    </select>
+                </div>
+                <div class="row">
+                    <label>并发</label>
+                    <input id="inp-concur" type="number" value="${SNIPER.config.normalConcurrency}" min="1" max="20" step="1">
+                    <span class="row-unit">路</span>
+                    <label style="flex:0 0 36px;">重试</label>
+                    <input id="inp-retries" type="number" value="${SNIPER.config.maxRetries}" min="10" max="10000" step="10">
+                    <span class="row-unit">次</span>
                 </div>
                 <div class="status-bar idle" id="status-bar">
                     <span class="status-dot"></span>
@@ -1333,9 +1303,11 @@
                 </div>
                 <div class="btn-row">
                     <button class="btn btn-primary" id="btn-monitor">▶ 开始监控</button>
+                </div>
+                <div class="btn-row" style="margin-top:6px;">
                     <button class="btn btn-rush" id="btn-rush">⚡ 立即抢购</button>
                 </div>
-                <div class="btn-row" style="margin-top:7px;">
+                <div class="btn-row" style="margin-top:6px;">
                     <button class="btn btn-secondary" id="btn-scan">扫描套餐</button>
                     <button class="btn btn-secondary" id="btn-reset">重置</button>
                 </div>
@@ -1352,9 +1324,7 @@
             selPlan: shadow.getElementById('sel-plan'),
             selCycle: shadow.getElementById('sel-cycle'),
             inpTime: shadow.getElementById('inp-time'),
-            inpLead: shadow.getElementById('inp-lead'),
-            inpTurb: shadow.getElementById('inp-turbo'),
-            inpNormal: shadow.getElementById('inp-normal'),
+            inpConcur: shadow.getElementById('inp-concur'),
             inpRetries: shadow.getElementById('inp-retries'),
             statusBar: shadow.getElementById('status-bar'),
             logArea: shadow.getElementById('log-area'),
@@ -1379,14 +1349,14 @@
             SNIPER.config.targetPlan = d.selPlan.value;
             SNIPER.config.billingCycle = d.selCycle.value;
             SNIPER.config.triggerTime = d.inpTime.value;
-            SNIPER.config.leadMs = parseInt(d.inpLead.value) || 200;
-            SNIPER.config.turboConcurrency = parseInt(d.inpTurb.value) || 10;
-            SNIPER.config.normalConcurrency = parseInt(d.inpNormal.value) || 5;
+            SNIPER.config.normalConcurrency = parseInt(d.inpConcur.value) || 5;
+            // turboConcurrency 自动 = normalConcurrency × 2
+            SNIPER.config.turboConcurrency = (parseInt(d.inpConcur.value) || 5) * 2;
             SNIPER.config.maxRetries = parseInt(d.inpRetries.value) || 2000;
             SNIPER.saveConfig();
         };
 
-        [d.selPlan, d.selCycle, d.inpTime, d.inpLead, d.inpTurb, d.inpNormal, d.inpRetries].forEach(el => {
+        [d.selPlan, d.selCycle, d.inpTime, d.inpConcur, d.inpRetries].forEach(el => {
             el.addEventListener('change', saveConfig);
             el.addEventListener('input', saveConfig);
         });
@@ -1653,9 +1623,7 @@
         const cfg = SNIPER.config;
         d.selCycle.value = cfg.billingCycle;
         d.inpTime.value = cfg.triggerTime;
-        d.inpLead.value = cfg.leadMs;
-        d.inpTurb.value = cfg.turboConcurrency;
-        d.inpNormal.value = cfg.normalConcurrency;
+        d.inpConcur.value = cfg.normalConcurrency;
         d.inpRetries.value = cfg.maxRetries;
 
         SNIPER.info('控制面板已初始化');
