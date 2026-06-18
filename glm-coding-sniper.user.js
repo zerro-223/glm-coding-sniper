@@ -13,6 +13,7 @@
 // @grant        GM_setValue
 // @grant        GM_addStyle
 // @grant        unsafeWindow
+// @require      https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js
 // ==/UserScript==
 
 (function () {
@@ -33,6 +34,7 @@
         slowInterval: 100,        // 慢速重试间隔(ms)
         jitterRatio: 0.3,         // 抖动比例(±30%)
         pickupWindowMs: 300000,   // 捡漏窗口(5分钟)
+        stealthMode: true,         // 隐身模式 — 降低并发/增加抖动/失败退避
     };
 
     // ============ 运行时状态 ============
@@ -370,24 +372,36 @@
         _controllers: [],
         _running: false,
         _pickupTimeout: null,
+        _failStreak: 0,           // 连续失败计数（退避用）
     };
 
     // 计算自适应间隔
     SNIPER.engine._getInterval = function (retryCount) {
-        const cfg = SNIPER.config;
-        if (retryCount < cfg.burstCount) return 0;
-        const base = retryCount < 100 ? cfg.fastInterval : cfg.slowInterval;
-        const jitter = base * cfg.jitterRatio * (Math.random() * 2 - 1);  // ±30%
-        return Math.max(0, Math.floor(base + jitter));
+        var cfg = SNIPER.config;
+        var stealth = cfg.stealthMode;
+        var burst = stealth ? Math.min(cfg.burstCount, 5) : cfg.burstCount;
+        if (retryCount < burst) return 0;
+        var base = retryCount < 100 ? cfg.fastInterval : cfg.slowInterval;
+        // 隐身模式：间隔 ×1.5，抖动 ±50%
+        if (stealth) base = Math.floor(base * 1.5);
+        var jitterRatio = stealth ? 0.5 : cfg.jitterRatio;
+        var jitter = base * jitterRatio * (Math.random() * 2 - 1);
+        // 连续失败后退避：每多失败一次间隔翻倍（上限 10s）
+        var backoff = Math.min(SNIPER.engine._failStreak, 10);
+        return Math.max(0, Math.floor(base + jitter) + backoff * 1000);
     };
 
     // 当前并发数
     SNIPER.engine._getConcurrency = function () {
-        const elapsed = Date.now() - STATE.startTime;
-        if (elapsed < SNIPER.config.turboDuration) {
-            return SNIPER.config.turboConcurrency;
-        }
-        return SNIPER.config.normalConcurrency;
+        var elapsed = Date.now() - STATE.startTime;
+        var turbo = SNIPER.config.stealthMode
+            ? Math.min(SNIPER.config.turboConcurrency, 4)
+            : SNIPER.config.turboConcurrency;
+        var normal = SNIPER.config.stealthMode
+            ? Math.min(SNIPER.config.normalConcurrency, 3)
+            : SNIPER.config.normalConcurrency;
+        if (elapsed < SNIPER.config.turboDuration) return turbo;
+        return normal;
     };
 
     // 发送单个 preview 请求（带 AbortController + 10s 超时）
@@ -517,6 +531,7 @@
 
                 if (checkResult.valid) {
                     STATE.bizId = bizId;
+                    SNIPER.engine._failStreak = 0;
                     SNIPER.success(`✅ 抢购成功! bizId: ${bizId}`);
                     SNIPER.engine._running = false;
                     SNIPER.updateStatus('success', '抢购成功! 请立即扫码支付');
@@ -526,6 +541,7 @@
                     SNIPER.warn('bizId 已过期，重试中...');
                 }
             } catch (err) {
+                SNIPER.engine._failStreak++;
                 if (err.message === 'SOLD_OUT') {
                     SNIPER.debug('售罄，继续重试...');
                 } else if (err.name === 'AbortError') {
@@ -614,6 +630,7 @@
         SNIPER.engine._running = true;
         STATE.startTime = Date.now();
         STATE.retryCount = 0;
+        SNIPER.engine._failStreak = 0;
         STATE.status = 'running';
         SNIPER.updateStatus('running', '抢购中...');
 
@@ -888,61 +905,145 @@
         } catch (e) { /* ignore */ }
     };
 
-    // ============ 验证码监控 ============
+    // ============ 验证码监控 + OCR ============
     SNIPER.captchaMonitor = {
         _observer: null,
         _watching: false,
+        _ocrBusy: false,
+    };
+
+    // OCR 识别文字验证码
+    SNIPER.captchaMonitor._tryOCR = function (captchaImg) {
+        if (SNIPER.captchaMonitor._ocrBusy) return;
+        if (typeof Tesseract === 'undefined') {
+            SNIPER.warn('Tesseract.js 未加载，请手动输入验证码');
+            return;
+        }
+        SNIPER.captchaMonitor._ocrBusy = true;
+        SNIPER.info('正在 OCR 识别验证码...');
+
+        // 获取图片 URL（img.src 或 canvas.toDataURL）
+        var imgSrc = captchaImg.src || '';
+        if (!imgSrc && captchaImg.tagName === 'CANVAS') {
+            try { imgSrc = captchaImg.toDataURL('image/png'); } catch (e) {}
+        }
+        if (!imgSrc) {
+            SNIPER.warn('无法获取验证码图片源');
+            SNIPER.captchaMonitor._ocrBusy = false;
+            return;
+        }
+
+        Tesseract.recognize(imgSrc, 'eng', {
+            tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz',
+        }).then(function (result) {
+            SNIPER.captchaMonitor._ocrBusy = false;
+            var text = result.data.text.replace(/\\s/g, '').trim();
+            SNIPER.success('OCR 识别结果: ' + (text || '(空)'));
+
+            if (text && text.length >= 2) {
+                // 查找验证码输入框（通常靠近验证码图片）
+                var container = captchaImg.closest('div,form,.modal,[class*=\"captcha\"],[class*=\"verify\"]') || document;
+                var input = container.querySelector('input[type=\"text\"], input:not([type]), '
+                    + 'input[name*=\"captcha\"], input[name*=\"code\"], input[name*=\"verify\"], '
+                    + 'input[placeholder*=\"验证\"], input[placeholder*=\"captcha\"], '
+                    + 'input[class*=\"captcha\"], input[class*=\"code\"]');
+                if (!input) {
+                    // 更宽泛的搜索：页面上所有可见 text input
+                    var allInputs = document.querySelectorAll('input[type=\"text\"], input:not([type])');
+                    for (var i = 0; i < allInputs.length; i++) {
+                        var inp = allInputs[i];
+                        if (inp.offsetParent !== null && inp.value === '') {
+                            input = inp;
+                            break;
+                        }
+                    }
+                }
+                if (input) {
+                    input.value = text;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    SNIPER.success('验证码已填入: ' + text);
+                    // 尝试点击确认按钮
+                    setTimeout(function () {
+                        var btn = container.querySelector(
+                            'button[class*=\"confirm\"], button[class*=\"submit\"], button[class*=\"ok\"], '
+                            + '.btn-confirm, .btn-submit, [class*=\"verify-btn\"], '
+                            + 'button:contains(\"确定\"), button:contains(\"提交\"), button:contains(\"验证\")'
+                        );
+                        if (!btn) {
+                            var allBtns = container.querySelectorAll('button, .btn, [role=\"button\"]');
+                            for (var j = 0; j < allBtns.length; j++) {
+                                var b = allBtns[j];
+                                var t = b.textContent.trim();
+                                if (t === '确定' || t === '提交' || t === '验证' || t === '确认') {
+                                    btn = b; break;
+                                }
+                            }
+                        }
+                        if (btn) { btn.click(); SNIPER.debug('已点击验证按钮'); }
+                    }, 300);
+                    return; // OCR 成功填入，跳过手动提示
+                }
+            }
+            // OCR 失败或无输入框 → 回退手动提示
+            SNIPER.captchaMonitor._alertManual(captchaImg);
+        }).catch(function (err) {
+            SNIPER.captchaMonitor._ocrBusy = false;
+            SNIPER.warn('OCR 失败: ' + (err.message || err));
+            SNIPER.captchaMonitor._alertManual(captchaImg);
+        });
+    };
+
+    // 手动验证码提醒
+    SNIPER.captchaMonitor._alertManual = function (captchaEl) {
+        SNIPER.warn('⚠️ 请手动输入验证码');
+        SNIPER.updateStatus('running', '⚠️ 请手动输入验证码');
+        captchaEl.style.outline = '3px solid #ff6b6b';
+        captchaEl.style.animation = 'glm-flash 0.5s infinite alternate';
+        try {
+            var ctx = new (window.AudioContext || window.webkitAudioContext)();
+            var osc = ctx.createOscillator();
+            osc.connect(ctx.destination);
+            osc.frequency.value = 600;
+            osc.type = 'square';
+            osc.start(); osc.stop(ctx.currentTime + 0.3);
+        } catch (e) { /* ignore */ }
     };
 
     SNIPER.captchaMonitor.watch = function () {
         if (SNIPER.captchaMonitor._watching) return;
         SNIPER.captchaMonitor._watching = true;
 
-        SNIPER.captchaMonitor._observer = new MutationObserver((mutations) => {
-            mutations.forEach(m => {
-                m.addedNodes.forEach(node => {
+        SNIPER.captchaMonitor._observer = new MutationObserver(function (mutations) {
+            mutations.forEach(function (m) {
+                m.addedNodes.forEach(function (node) {
                     if (node.nodeType !== 1) return;
-                    // 检测验证码相关元素
-                    const captchaSelectors = [
+                    // 检测验证码图片
+                    var captchaSelectors = [
                         '.captcha', '#captcha', '[class*="captcha"]',
                         '[class*="verify"]', '[id*="captcha"]',
                         'img[src*="captcha"]', 'img[src*="verify"]',
                         '.slider-captcha', '.geetest', '.yidun',
                         'canvas[class*="captcha"]',
                     ];
-                    let captchaEl = null;
-                    for (const sel of captchaSelectors) {
-                        captchaEl = node.matches && node.matches(sel) ? node : node.querySelector && node.querySelector(sel);
+                    var captchaEl = null;
+                    for (var i = 0; i < captchaSelectors.length; i++) {
+                        captchaEl = node.matches && node.matches(captchaSelectors[i])
+                            ? node : node.querySelector && node.querySelector(captchaSelectors[i]);
                         if (captchaEl) break;
                     }
                     if (captchaEl) {
-                        SNIPER.warn('⚠️ 检测到验证码! 请手动完成验证');
-                        SNIPER.updateStatus('running', '⚠️ 请手动完成验证码!');
-                        // 高亮验证码区域
-                        captchaEl.style.outline = '3px solid #ff6b6b';
-                        captchaEl.style.animation = 'glm-flash 0.5s infinite alternate';
-                        // 播放提示音
-                        try {
-                            const ctx = new (window.AudioContext || window.webkitAudioContext)();
-                            const osc = ctx.createOscillator();
-                            const gain = ctx.createGain();
-                            osc.connect(gain); gain.connect(ctx.destination);
-                            osc.frequency.value = 600;
-                            osc.type = 'square';
-                            gain.gain.value = 0.3;
-                            osc.start(); osc.stop(ctx.currentTime + 0.3);
-                        } catch (e) { /* ignore */ }
-                        // 浏览器通知
-                        if (typeof GM_notification === 'function') {
-                            GM_notification({
-                                title: '需要验证码!',
-                                text: 'GLM 抢购助手检测到验证码，请手动完成',
-                                timeout: 5000,
-                            });
-                        } else if ('Notification' in window && Notification.permission === 'granted') {
-                            new Notification('需要验证码!', {
-                                body: 'GLM 抢购助手检测到验证码，请手动完成',
-                            });
+                        // 尝试 OCR 自动识别
+                        if (captchaEl.tagName === 'IMG' || captchaEl.tagName === 'CANVAS') {
+                            SNIPER.captchaMonitor._tryOCR(captchaEl);
+                        } else {
+                            // 可能是个容器，找里面的 img
+                            var innerImg = captchaEl.querySelector('img, canvas');
+                            if (innerImg) {
+                                SNIPER.captchaMonitor._tryOCR(innerImg);
+                            } else {
+                                SNIPER.captchaMonitor._alertManual(captchaEl);
+                            }
                         }
                     }
                 });
@@ -954,7 +1055,7 @@
             subtree: true,
         });
 
-        SNIPER.debug('验证码监控已启动');
+        SNIPER.debug('验证码监控已启动 (OCR)');
     };
 
     SNIPER.captchaMonitor.stop = function () {
@@ -1294,6 +1395,12 @@
                     <input id="inp-retries" type="number" value="${SNIPER.config.maxRetries}" min="10" max="10000" step="10">
                     <span class="row-unit">次</span>
                 </div>
+                <div class="row" style="margin-bottom:10px;">
+                    <label style="flex:0 0 56px;color:var(--text-muted);">隐身模式</label>
+                    <input id="inp-stealth" type="checkbox" ${SNIPER.config.stealthMode ? 'checked' : ''}
+                        style="flex:none;width:16px;height:16px;accent-color:var(--accent);cursor:pointer;">
+                    <span style="font-size:10px;color:var(--text-muted);">降低频率防封</span>
+                </div>
                 <div class="status-bar idle" id="status-bar">
                     <span class="status-dot"></span>
                     <span class="status-text">等待操作</span>
@@ -1326,6 +1433,7 @@
             inpTime: shadow.getElementById('inp-time'),
             inpConcur: shadow.getElementById('inp-concur'),
             inpRetries: shadow.getElementById('inp-retries'),
+            inpStealth: shadow.getElementById('inp-stealth'),
             statusBar: shadow.getElementById('status-bar'),
             logArea: shadow.getElementById('log-area'),
             btnMonitor: shadow.getElementById('btn-monitor'),
@@ -1353,10 +1461,11 @@
             // turboConcurrency 自动 = normalConcurrency × 2
             SNIPER.config.turboConcurrency = (parseInt(d.inpConcur.value) || 5) * 2;
             SNIPER.config.maxRetries = parseInt(d.inpRetries.value) || 2000;
+            SNIPER.config.stealthMode = d.inpStealth.checked;
             SNIPER.saveConfig();
         };
 
-        [d.selPlan, d.selCycle, d.inpTime, d.inpConcur, d.inpRetries].forEach(el => {
+        [d.selPlan, d.selCycle, d.inpTime, d.inpConcur, d.inpRetries, d.inpStealth].forEach(el => {
             el.addEventListener('change', saveConfig);
             el.addEventListener('input', saveConfig);
         });
@@ -1625,6 +1734,7 @@
         d.inpTime.value = cfg.triggerTime;
         d.inpConcur.value = cfg.normalConcurrency;
         d.inpRetries.value = cfg.maxRetries;
+        d.inpStealth.checked = cfg.stealthMode !== false;
 
         SNIPER.info('控制面板已初始化');
         SNIPER.scanPlans();
