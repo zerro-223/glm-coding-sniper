@@ -519,7 +519,7 @@
                     STATE.bizId = bizId;
                     SNIPER.success(`✅ 抢购成功! bizId: ${bizId}`);
                     SNIPER.engine._running = false;
-                    SNIPER.updateStatus('success', '✅ 抢购成功! 请立即扫码支付');
+                    SNIPER.updateStatus('success', '抢购成功! 请立即扫码支付');
                     SNIPER.engine._onSuccess(bizId, checkResult.data);
                     return;
                 } else if (checkResult.expired) {
@@ -550,7 +550,7 @@
             SNIPER.warn('达到最大重试次数');
         }
         if (SNIPER.engine._running) {
-            SNIPER.updateStatus('failed', '❌ 抢购未成功');
+            SNIPER.updateStatus('failed', '抢购未成功');
             SNIPER.engine._running = false;
         }
     };
@@ -615,7 +615,7 @@
         STATE.startTime = Date.now();
         STATE.retryCount = 0;
         STATE.status = 'running';
-        SNIPER.updateStatus('running', '🔴 抢购中...');
+        SNIPER.updateStatus('running', '抢购中...');
 
         // 启动拾漏定时器 (5分钟后自动停止)
         SNIPER.engine._pickupTimeout = setTimeout(() => {
@@ -718,7 +718,7 @@
         SNIPER.timer._callback = callback;
 
         SNIPER.info(`已设置定时触发: ${timeStr} (提前 ${SNIPER.config.leadMs}ms)`);
-        SNIPER.updateStatus('monitoring', `🟡 监控中，目标时间: ${timeStr}`);
+        SNIPER.updateStatus('monitoring', `监控中，目标时间: ${timeStr}`);
 
         const tick = () => {
             const diff = effectiveLocal - Date.now();
@@ -977,142 +977,279 @@
 
         const shadow = host.attachShadow({ mode: 'closed' });
 
-        // 内联样式
+        // 内联样式 — 暗玻璃设计系统
         const style = document.createElement('style');
         style.textContent = `
+            :host {
+                --glass-bg:       rgba(18, 18, 30, 0.74);
+                --glass-border:   rgba(255, 255, 255, 0.06);
+                --glass-input:    rgba(255, 255, 255, 0.05);
+                --glass-hover:    rgba(255, 255, 255, 0.08);
+                --accent:         #ff6b6b;
+                --accent-glow:    rgba(255, 107, 107, 0.25);
+                --cta:            #ff6b6b;
+                --cta-glow:       rgba(255, 107, 107, 0.30);
+                --success:        #2ecc71;
+                --warning:        #f59e0b;
+                --text-primary:   #e8e8ed;
+                --text-secondary: #9a9aaa;
+                --text-muted:     #6b6b7d;
+                --radius-sm:      6px;
+                --radius-md:      10px;
+                --radius-lg:      14px;
+                --font-ui:        system-ui, -apple-system, 'Segoe UI', sans-serif;
+                --font-mono:      'JetBrains Mono', 'Fira Code', 'Consolas', 'Courier New', monospace;
+            }
             * { box-sizing:border-box;margin:0;padding:0; }
+
             .panel {
-                width: 300px;
-                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-                color: #e0e0e0;
-                border-radius: 12px;
-                box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-                font-family: 'Segoe UI', system-ui, sans-serif;
-                font-size: 13px;
+                width: 280px;
+                background: var(--glass-bg);
+                color: var(--text-primary);
+                border-radius: var(--radius-lg);
+                box-shadow:
+                    0 0 0 1px var(--glass-border),
+                    0 8px 40px rgba(0,0,0,0.55);
+                font-family: var(--font-ui);
+                font-size: 12px;
                 overflow: hidden;
                 user-select: none;
+                backdrop-filter: blur(20px) saturate(140%);
+                -webkit-backdrop-filter: blur(20px) saturate(140%);
             }
+            /* header */
             .header {
-                background: rgba(255,255,255,0.05);
-                padding: 10px 12px;
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
+                padding: 10px 14px;
                 cursor: move;
-                border-bottom: 1px solid rgba(255,255,255,0.08);
+                border-bottom: 1px solid var(--glass-border);
+                position: relative;
             }
-            .header h3 { font-size:14px;color:#ff6b6b;margin:0; }
-            .header-btns { display:flex;gap:6px; }
-            .header-btns button {
-                background: rgba(255,255,255,0.1);
-                border: none;
-                color: #ccc;
-                width: 22px;
-                height: 22px;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 12px;
-                line-height: 1;
+            /* 顶部折射光条 */
+            .header::after {
+                content: '';
+                position: absolute;
+                left: 0; top: 0; right: 0;
+                height: 1px;
+                background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
             }
-            .header-btns button:hover { background: rgba(255,255,255,0.2); }
-            .body {
-                padding: 10px 12px;
-                max-height: 400px;
-                overflow-y: auto;
+            .header-brand {
+                display: flex;
+                align-items: center;
+                gap: 8px;
             }
-            .section { margin-bottom: 8px; }
-            .section-label {
-                display: block;
-                font-size: 11px;
-                color: #888;
-                margin-bottom: 4px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }
-            .row { display:flex;gap:8px;align-items:center;margin-bottom:6px; }
-            .row label { flex:0 0 65px;font-size:12px;color:#aaa; }
-            select, input {
-                flex: 1;
-                background: rgba(255,255,255,0.08);
-                border: 1px solid rgba(255,255,255,0.12);
+            .header-icon {
+                width: 26px; height: 26px;
                 border-radius: 6px;
-                color: #e0e0e0;
-                padding: 5px 8px;
-                font-size: 12px;
+                background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+                display: flex; align-items: center; justify-content: center;
+                font-size: 14px;
+            }
+            .header h3 {
+                font-size: 13px;
+                font-weight: 600;
+                color: var(--text-primary);
+                letter-spacing: -0.01em;
+            }
+            .header h3 span { color: var(--accent); }
+            .header-btns { display:flex;gap:4px; }
+            .header-btns button {
+                background: transparent;
+                border: 1px solid var(--glass-border);
+                color: var(--text-muted);
+                width: 24px; height: 24px;
+                border-radius: var(--radius-sm);
+                cursor: pointer;
+                font-size: 11px;
+                line-height: 1;
+                transition: all 0.15s ease;
+            }
+            .header-btns button:hover {
+                background: var(--glass-hover);
+                color: var(--text-secondary);
+                border-color: rgba(255,255,255,0.12);
+            }
+            /* body */
+            .body { padding: 12px 14px; }
+            /* rows */
+            .row { display: flex; gap: 8px; align-items: center; margin-bottom: 7px; }
+            .row label { flex: 0 0 40px; font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+            .row-unit { font-size: 10px; color: var(--text-muted); flex-shrink: 0; min-width: 16px; }
+            select, input[type="text"] {
+                flex: 1; min-width: 0;
+                background: var(--glass-input);
+                border: 1px solid var(--glass-border);
+                border-radius: var(--radius-sm);
+                color: var(--text-primary);
+                padding: 6px 8px;
+                font-size: 11px;
+                font-family: var(--font-ui);
                 outline: none;
+                transition: border-color 0.15s ease, box-shadow 0.15s ease;
             }
             select:focus, input:focus {
-                border-color: #ff6b6b;
+                border-color: var(--accent);
+                box-shadow: 0 0 0 3px var(--accent-glow);
             }
-            select option { background:#1a1a2e; }
+            select {
+                cursor: pointer; appearance: none;
+                background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236b6b7d'/%3E%3C/svg%3E");
+                background-repeat: no-repeat;
+                background-position: right 8px center;
+                padding-right: 24px;
+            }
+            select option { background: #181820; color: var(--text-primary); }
+            input[type="number"] {
+                flex: 1; max-width: 56px; min-width: 0; text-align: center;
+                background: var(--glass-input);
+                border: 1px solid var(--glass-border);
+                border-radius: var(--radius-sm);
+                color: var(--text-primary);
+                padding: 6px 4px;
+                font-size: 11px;
+                font-family: var(--font-mono);
+                outline: none;
+                -moz-appearance: textfield;
+                transition: border-color 0.15s ease, box-shadow 0.15s ease;
+            }
+            input[type="number"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+            input[type="number"]::-webkit-inner-spin-button,
+            input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
+            /* status bar */
             .status-bar {
+                display: flex; align-items: center; gap: 8px;
                 padding: 8px 12px;
-                background: rgba(0,0,0,0.2);
-                border-radius: 6px;
-                margin-bottom: 8px;
-                font-size: 12px;
+                background: var(--glass-input);
+                border-radius: var(--radius-md);
+                margin-bottom: 10px;
+                font-size: 11px;
+                font-family: var(--font-mono);
+                border: 1px solid var(--glass-border);
+                transition: border-color 0.3s ease;
+            }
+            .status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+            .status-bar.idle    { border-color: rgba(255,255,255,0.06); }
+            .status-bar.idle    .status-dot { background: #52525b; }
+            .status-bar.monitoring { border-color: var(--warning); }
+            .status-bar.monitoring .status-dot {
+                background: var(--warning);
+                animation: dot-pulse 1.5s ease-in-out infinite;
+            }
+            .status-bar.running  { border-color: var(--accent); }
+            .status-bar.running  .status-dot {
+                background: var(--accent);
+                animation: dot-pulse 0.8s ease-in-out infinite;
+            }
+            .status-bar.success  { border-color: var(--success); }
+            .status-bar.success  .status-dot { background: var(--success); }
+            .status-bar.failed   { border-color: #ef4444; }
+            .status-bar.failed   .status-dot { background: #ef4444; }
+            @keyframes dot-pulse {
+                0%, 100% { opacity: 1; transform: scale(1); }
+                50%      { opacity: 0.4; transform: scale(0.7); }
+            }
+            /* log area */
+            .log-area {
+                background: var(--glass-input);
+                border: 1px solid var(--glass-border);
+                border-radius: var(--radius-md);
+                padding: 6px 10px;
+                max-height: 40px;
+                overflow-y: auto;
+                font-size: 10px;
+                font-family: var(--font-mono);
+                line-height: 1.5;
+                margin-bottom: 10px;
+            }
+            .log-entry { padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .log-entry .t { color: var(--text-muted); margin-right: 6px; }
+            .log-entry.DEBUG   { color: var(--text-muted); }
+            .log-entry.INFO    { color: var(--text-secondary); }
+            .log-entry.WARN    { color: var(--warning); }
+            .log-entry.ERROR   { color: #f87171; }
+            .log-entry.SUCCESS { color: var(--success); }
+            /* buttons */
+            .btn-row { display:flex;gap:7px;flex-wrap:wrap; }
+            .btn-row .btn { flex: 1; }
+            .btn {
+                padding: 8px 10px;
+                border: 1px solid transparent;
+                border-radius: var(--radius-sm);
+                cursor: pointer;
+                font-size: 11px;
+                font-weight: 600;
+                font-family: var(--font-ui);
+                letter-spacing: 0.01em;
+                transition: all 0.2s ease;
                 text-align: center;
             }
-            .status-bar.idle { border-left:3px solid #4ecdc4; }
-            .status-bar.monitoring { border-left:3px solid #ffe66d; }
-            .status-bar.running { border-left:3px solid #ff6b6b; }
-            .status-bar.success { border-left:3px solid #2ecc71; }
-            .status-bar.failed { border-left:3px solid #e74c3c; }
-            .log-area {
-                background: rgba(0,0,0,0.3);
-                border-radius: 6px;
-                padding: 6px 8px;
-                max-height: 80px;
-                overflow-y: auto;
-                font-size: 11px;
-                font-family: 'Consolas', 'Courier New', monospace;
-                margin-bottom: 8px;
-            }
-            .log-entry { padding:1px 0;border-bottom:1px solid rgba(255,255,255,0.03); }
-            .log-entry .t { color:#666;margin-right:4px; }
-            .log-entry.DEBUG { color:#888; }
-            .log-entry.INFO { color:#aaa; }
-            .log-entry.WARN { color:#ffe66d; }
-            .log-entry.ERROR { color:#ff6b6b; }
-            .log-entry.SUCCESS { color:#2ecc71; }
-            .btn-row { display:flex;gap:6px;flex-wrap:wrap; }
-            .btn {
-                flex: 1;
-                min-width: 60px;
-                padding: 7px 10px;
-                border: none;
-                border-radius: 6px;
-                cursor: pointer;
-                font-size: 12px;
-                font-weight: 600;
-                transition: transform 0.2s, box-shadow 0.2s;
-            }
-            .btn:hover { transform: translateY(-1px); }
+            .btn:active { transform: scale(0.97); }
             .btn-primary {
+                background: var(--glass-input);
+                color: var(--text-primary);
+                border-color: var(--glass-border);
+            }
+            .btn-primary:hover {
+                background: var(--glass-hover);
+                border-color: var(--accent);
+                color: var(--accent);
+                box-shadow: 0 0 16px var(--accent-glow);
+            }
+            .btn-rush {
                 background: linear-gradient(135deg, #ff6b6b, #ee5a24);
                 color: #fff;
+                border-color: transparent;
+                font-weight: 700;
+                letter-spacing: 0.02em;
             }
-            .btn-primary:hover { box-shadow: 0 4px 12px rgba(255,107,107,0.4); }
-            .btn-secondary { background: rgba(255,255,255,0.1); color: #ccc; }
-            .btn-secondary:hover { background: rgba(255,255,255,0.2); }
-            .btn-danger { background: rgba(231,76,60,0.3); color: #e74c3c; }
-            .btn-danger:hover { background: rgba(231,76,60,0.5); }
+            .btn-rush:hover {
+                box-shadow: 0 0 20px var(--cta-glow), 0 4px 12px rgba(0,0,0,0.3);
+                transform: translateY(-1px);
+            }
+            .btn-rush:active { transform: scale(0.97) translateY(0); }
+            .btn-rush.running { animation: rush-glow 1.2s ease-in-out infinite; }
+            @keyframes rush-glow {
+                0%, 100% { box-shadow: 0 0 8px var(--cta-glow); }
+                50%      { box-shadow: 0 0 24px var(--cta-glow), 0 0 48px rgba(255,107,107,0.1); }
+            }
+            .btn-secondary {
+                background: transparent;
+                color: var(--text-secondary);
+                border-color: var(--glass-border);
+            }
+            .btn-secondary:hover {
+                background: var(--glass-input);
+                color: var(--text-primary);
+                border-color: rgba(255,255,255,0.12);
+            }
+            /* collapsed */
             .minimized .body { display:none; }
-            .shortcut-hint { font-size:10px;color:#555;text-align:center;margin-top:4px; }
+            .minimized .header { border-bottom: none; }
+            /* hint */
+            .shortcut-hint {
+                font-size: 9px; color: var(--text-muted); text-align: center;
+                margin-top: 6px; font-family: var(--font-mono); opacity: 0.7;
+            }
+            .shortcut-hint kbd {
+                display: inline-block;
+                background: var(--glass-input);
+                border: 1px solid var(--glass-border);
+                border-radius: 3px;
+                padding: 0 4px;
+                font-family: var(--font-mono);
+                font-size: 9px;
+                color: var(--text-secondary);
+            }
             @keyframes glm-flash {
-                from { outline-color: #ff6b6b; }
-                to { outline-color: #ffe66d; }
-            }
-            @keyframes glm-pulse {
-                0%, 100% { box-shadow: 0 0 0 0 rgba(255,107,107,0.4); }
-                50% { box-shadow: 0 0 0 8px rgba(255,107,107,0); }
-            }
-            .btn-primary.running {
-                animation: glm-pulse 1.5s infinite;
+                from { outline-color: #f87171; }
+                to   { outline-color: var(--warning); }
             }
             ::-webkit-scrollbar { width: 4px; }
             ::-webkit-scrollbar-track { background: transparent; }
-            ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+            ::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 2px; }
+            ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.12); }
         `;
         shadow.appendChild(style);
 
@@ -1121,23 +1258,29 @@
         panel.className = 'panel';
         panel.innerHTML = `
             <div class="header" id="panel-header">
-                <h3>🔥 GLM 抢购助手</h3>
+                <div class="header-brand">
+                    <div class="header-icon">🎯</div>
+                    <h3>GLM<span>·抢购</span></h3>
+                </div>
                 <div class="header-btns">
                     <button id="btn-min" title="最小化">─</button>
-                    <button id="btn-close" title="关闭面板" style="color:#ff6b6b;">✕</button>
+                    <button id="btn-close" title="关闭面板">✕</button>
                 </div>
             </div>
             <div class="body" id="panel-body">
                 <div class="section">
-                    <span class="section-label">套餐设置</span>
+                    <div class="section-header">
+                        <span class="section-dot plan"></span>
+                        <span class="section-label">套餐设置</span>
+                    </div>
                     <div class="row">
-                        <label>目标套餐:</label>
+                        <label>目标套餐</label>
                         <select id="sel-plan">
-                            <option value="">自动检测...</option>
+                            <option value="">自动检测</option>
                         </select>
                     </div>
                     <div class="row">
-                        <label>付费周期:</label>
+                        <label>付费周期</label>
                         <select id="sel-cycle">
                             <option value="monthly">连续包月</option>
                             <option value="quarterly">连续包季 (9折)</option>
@@ -1146,50 +1289,59 @@
                     </div>
                 </div>
                 <div class="section">
-                    <span class="section-label">定时设置</span>
+                    <div class="section-header">
+                        <span class="section-dot timer"></span>
+                        <span class="section-label">定时设置</span>
+                    </div>
                     <div class="row">
-                        <label>开抢时间:</label>
+                        <label>开抢时间</label>
                         <input id="inp-time" type="text" value="${SNIPER.config.triggerTime}" placeholder="09:59:58">
                     </div>
                     <div class="row">
-                        <label>提前量:</label>
+                        <label>提前触发</label>
                         <input id="inp-lead" type="number" value="${SNIPER.config.leadMs}" placeholder="200" step="10">
-                        <span style="font-size:11px;color:#888;">ms</span>
+                        <span class="row-unit">ms</span>
                     </div>
                 </div>
                 <div class="section">
-                    <span class="section-label">并发设置</span>
+                    <div class="section-header">
+                        <span class="section-dot concur"></span>
+                        <span class="section-label">并发设置</span>
+                    </div>
                     <div class="row">
-                        <label>极速并发:</label>
+                        <label>极速并发</label>
                         <input id="inp-turbo" type="number" value="${SNIPER.config.turboConcurrency}" min="1" max="20" step="1">
-                        <span style="font-size:11px;color:#888;">路</span>
+                        <span class="row-unit">路</span>
                     </div>
                     <div class="row">
-                        <label>普通并发:</label>
+                        <label>普通并发</label>
                         <input id="inp-normal" type="number" value="${SNIPER.config.normalConcurrency}" min="1" max="10" step="1">
-                        <span style="font-size:11px;color:#888;">路</span>
+                        <span class="row-unit">路</span>
                     </div>
                     <div class="row">
-                        <label>最大重试:</label>
+                        <label>最大重试</label>
                         <input id="inp-retries" type="number" value="${SNIPER.config.maxRetries}" min="10" max="10000" step="10">
-                        <span style="font-size:11px;color:#888;">次</span>
+                        <span class="row-unit">次</span>
                     </div>
                 </div>
                 <div class="status-bar idle" id="status-bar">
-                    🟢 等待操作...
+                    <span class="status-dot"></span>
+                    <span class="status-text">等待操作</span>
                 </div>
                 <div class="log-area" id="log-area">
-                    <div data-placeholder style="color:#555;">日志输出...</div>
+                    <div data-placeholder style="color:var(--text-muted);">日志输出...</div>
                 </div>
                 <div class="btn-row">
                     <button class="btn btn-primary" id="btn-monitor">▶ 开始监控</button>
-                    <button class="btn btn-primary" id="btn-rush" style="background:linear-gradient(135deg,#ff6b6b,#c0392b);">⚡ 立即抢购</button>
+                    <button class="btn btn-rush" id="btn-rush">⚡ 立即抢购</button>
                 </div>
-                <div class="btn-row" style="margin-top:6px;">
-                    <button class="btn btn-secondary" id="btn-scan">🔄 扫描套餐</button>
-                    <button class="btn btn-secondary" id="btn-reset">↺ 重置</button>
+                <div class="btn-row" style="margin-top:7px;">
+                    <button class="btn btn-secondary" id="btn-scan">扫描套餐</button>
+                    <button class="btn btn-secondary" id="btn-reset">重置</button>
                 </div>
-                <div class="shortcut-hint">⚡ 快捷键: Alt+S 开始 | Alt+X 停止 | Alt+H 隐藏/显示</div>
+                <div class="shortcut-hint">
+                    <kbd>Alt</kbd>+<kbd>S</kbd> 开始 &nbsp; <kbd>Alt</kbd>+<kbd>X</kbd> 停止 &nbsp; <kbd>Alt</kbd>+<kbd>H</kbd> 隐藏
+                </div>
             </div>
         `;
         shadow.appendChild(panel);
@@ -1302,16 +1454,26 @@
         if (document.getElementById('glm-sniper-toggle')) return;
         const btn = document.createElement('div');
         btn.id = 'glm-sniper-toggle';
-        btn.innerHTML = '🔥';
+        btn.innerHTML = '🎯';
         btn.style.cssText = `
             position:fixed;z-index:999999;right:12px;bottom:12px;
-            width:36px;height:36px;border-radius:50%;
-            background:linear-gradient(135deg,#ff6b6b,#ee5a24);
-            color:#fff;font-size:18px;display:flex;
+            width:38px;height:38px;border-radius:50%;
+            background:linear-gradient(135deg,#8b5cf6,#a78bfa);
+            color:#fff;font-size:16px;display:flex;
             align-items:center;justify-content:center;
-            cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.4);
+            cursor:pointer;
+            box-shadow:0 4px 16px rgba(139,92,246,0.35),0 2px 4px rgba(0,0,0,0.3);
+            transition:transform 0.2s ease,box-shadow 0.2s ease;
         `;
         btn.title = '显示 GLM 抢购助手';
+        btn.addEventListener('mouseenter', () => {
+            btn.style.transform = 'scale(1.08)';
+            btn.style.boxShadow = '0 6px 20px rgba(139,92,246,0.45),0 2px 4px rgba(0,0,0,0.3)';
+        });
+        btn.addEventListener('mouseleave', () => {
+            btn.style.transform = 'scale(1)';
+            btn.style.boxShadow = '0 4px 16px rgba(139,92,246,0.35),0 2px 4px rgba(0,0,0,0.3)';
+        });
         btn.addEventListener('click', () => {
             btn.remove();
             SNIPER.ui._dom.host.style.display = '';
@@ -1340,10 +1502,11 @@
         STATE.status = status;
         if (!SNIPER.ui._dom) return;
         const bar = SNIPER.ui._dom.statusBar;
-        bar.textContent = text || status;
         bar.className = 'status-bar ' + status;
-        const icons = { idle: '🟢', monitoring: '🟡', running: '🔴', success: '✅', failed: '❌' };
-        bar.textContent = (icons[status] || '') + ' ' + bar.textContent;
+        const statusText = bar.querySelector('.status-text');
+        if (statusText) {
+            statusText.textContent = text || status;
+        }
     };
 
     // 页面上方横幅通知
@@ -1352,13 +1515,15 @@
         const banner = document.createElement('div');
         banner.style.cssText = [
             'position:fixed;top:0;left:0;right:0;z-index:9999999;',
-            'padding:12px 24px;text-align:center;font-size:14px;font-weight:bold;',
-            'color:#fff;',
+            'padding:12px 24px;text-align:center;font-size:13px;font-weight:600;',
+            'font-family:system-ui,-apple-system,sans-serif;',
+            'color:#fff;letter-spacing:0.02em;',
             'background:' + (type === 'success'
-                ? 'linear-gradient(90deg,#11998e,#38ef7d)'
+                ? 'linear-gradient(90deg,#059669,#10b981)'
                 : type === 'error'
-                    ? 'linear-gradient(90deg,#cb2d3e,#ef473a)'
-                    : 'linear-gradient(90deg,#ff6b6b,#ee5a24)') + ';',
+                    ? 'linear-gradient(90deg,#e11d48,#f43f5e)'
+                    : 'linear-gradient(90deg,#8b5cf6,#a78bfa)') + ';',
+            'box-shadow:0 2px 16px rgba(0,0,0,0.3);',
         ].join('');
         banner.textContent = msg;
 
@@ -1524,7 +1689,7 @@
         SNIPER.timer.schedule(SNIPER.config.triggerTime, () => {
             SNIPER.engine.start();
         });
-        SNIPER.updateStatus('monitoring', `🟡 监控中，目标时间: ${SNIPER.config.triggerTime}`);
+        SNIPER.updateStatus('monitoring', `监控中，目标时间: ${SNIPER.config.triggerTime}`);
     };
 
     // 立即抢购
@@ -1557,7 +1722,7 @@
         STATE.retryCount = 0;
         STATE.bizId = null;
         STATE.status = 'idle';
-        SNIPER.updateStatus('idle', '🟢 等待操作...');
+        SNIPER.updateStatus('idle', '等待操作');
         SNIPER.info('已重置');
     };
 
