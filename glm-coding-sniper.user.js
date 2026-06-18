@@ -169,10 +169,13 @@
         const self = SNIPER.intercept;
         self._origFetchToString = window.fetch.toString;
         window.fetch = function (input, init) {
-            // 捕获请求参数
+            // 捕获请求参数（跳过引擎自身的请求）
             const url = typeof input === 'string' ? input : (input.url || input.href || '');
-            if (url.includes('preview') || url.includes('order') || url.includes('purchase')
-                || url.includes('subscribe') || url.includes('create') || url.includes('pay')) {
+            var isSniperReq = init && init.headers && (
+                init.headers['X-GLM-Sniper'] || (init.headers.get && init.headers.get('X-GLM-Sniper'))
+            );
+            if (!isSniperReq && (url.includes('preview') || url.includes('order') || url.includes('purchase')
+                || url.includes('subscribe') || url.includes('create') || url.includes('pay'))) {
                 const body = init && init.body;
                 if (body) {
                     try {
@@ -420,6 +423,7 @@
         var params = STATE.capturedParams;
         var headers = {
             'Content-Type': 'application/json',
+            'X-GLM-Sniper': '1',  // 标记引擎请求，避免拦截器自捕获
             ...SNIPER.antidetect.randomizeHeaders(),
         };
         // 保留原始请求的认证头（Authorization, X-Auth-Token 等）
