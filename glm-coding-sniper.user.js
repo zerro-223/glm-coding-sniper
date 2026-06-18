@@ -619,22 +619,6 @@
 
     // 成功回调
     SNIPER.engine._onSuccess = function (bizId, data) {
-        // 播放提示音
-        try {
-            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            [800, 1000, 1200].forEach((freq, i) => {
-                const osc = audioCtx.createOscillator();
-                const gain = audioCtx.createGain();
-                osc.connect(gain);
-                gain.connect(audioCtx.destination);
-                osc.frequency.value = freq;
-                osc.type = 'square';
-                gain.gain.value = 0.3;
-                osc.start(audioCtx.currentTime + i * 0.15);
-                osc.stop(audioCtx.currentTime + i * 0.15 + 0.1);
-            });
-        } catch (e) { /* ignore */ }
-
         // 浏览器通知
         if (typeof GM_notification === 'function') {
             GM_notification({
@@ -1131,16 +1115,23 @@
     SNIPER.captchaMonitor._alertManual = function (captchaEl) {
         SNIPER.warn('⚠️ 请手动输入验证码');
         SNIPER.updateStatus('running', '⚠️ 请手动输入验证码');
+        // 视觉高亮验证码区域
         captchaEl.style.outline = '3px solid #ff6b6b';
         captchaEl.style.animation = 'glm-flash 0.5s infinite alternate';
-        try {
-            var ctx = new (window.AudioContext || window.webkitAudioContext)();
-            var osc = ctx.createOscillator();
-            osc.connect(ctx.destination);
-            osc.frequency.value = 600;
-            osc.type = 'square';
-            osc.start(); osc.stop(ctx.currentTime + 0.3);
-        } catch (e) { /* ignore */ }
+        // 页面上方横幅提醒
+        SNIPER.ui.showBanner('⚠️ 检测到验证码，请手动输入', 'error');
+        // 浏览器通知
+        if (typeof GM_notification === 'function') {
+            GM_notification({
+                title: '需要验证码!',
+                text: 'OCR 识别失败，请手动输入验证码',
+                timeout: 5000,
+            });
+        } else if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('需要验证码!', {
+                body: 'OCR 识别失败，请手动输入验证码',
+            });
+        }
     };
 
     SNIPER.captchaMonitor.watch = function () {
