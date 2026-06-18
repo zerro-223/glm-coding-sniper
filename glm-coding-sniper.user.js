@@ -1377,6 +1377,25 @@
         }, 4000);
     };
 
+    // 验证文本是否像合法的套餐名
+    SNIPER._isValidPlanName = function (text) {
+        if (!text || text.length > 15 || text.length < 2) return false;
+        // 排除价格
+        if (/[¥$]/.test(text)) return false;
+        // 排除以数字开头的
+        if (/^\d/.test(text)) return false;
+        // 排除折扣/促销用语
+        if (/[折减]/.test(text)) return false;
+        // 排除周期/续费
+        if (/[月年季]/.test(text)) return false;
+        // 排除 UI 文本
+        if (/订阅|购买|抢购|支付|确认|下单|自动检测|扫描|套餐/.test(text)) return false;
+        if (/最受欢迎|推荐|热门|特惠|优惠|立减|拼好|新人|首充/.test(text)) return false;
+        if (/额度|适合|支持|逐步|下个|续费|金额|团队|个人/.test(text)) return false;
+        if (/元|¥|\$|原价|现价|限时|活动/.test(text)) return false;
+        return true;
+    };
+
     // 扫描套餐
     SNIPER.scanPlans = function () {
         const sel = SNIPER.ui._dom && SNIPER.ui._dom.selPlan;
@@ -1384,34 +1403,57 @@
         const currentValue = sel.value;
         sel.innerHTML = '<option value="">自动检测...</option>';
 
-        // 尝试从页面读取套餐信息
-        const planSelectors = [
-            '.plan-card', '.package-item', '.product-card',
-            '[class*="plan"]', '[class*="package"]', '[class*="product"]',
-            '.pricing-card', '.price-card',
-            'h3', 'h4', '.title',
-        ];
-
         const plans = new Set();
-        planSelectors.forEach(selector => {
+
+        // 策略1：在套餐卡片内查找标题元素（而非整个卡片的 textContent）
+        const cardSelectors = [
+            '.plan-card', '.package-item', '.product-card', '.pricing-card', '.price-card',
+            '[class*="plan-card"]', '[class*="package-card"]', '[class*="pricing-card"]',
+        ];
+        cardSelectors.forEach(selector => {
             try {
-                document.querySelectorAll(selector).forEach(el => {
-                    const text = el.textContent.trim();
-                    if (text && text.length < 50 && !text.includes('©')) {
-                        const cleaned = text.replace(/\s+/g, ' ').substring(0, 30);
-                        plans.add(cleaned);
+                document.querySelectorAll(selector).forEach(card => {
+                    const titleEl = card.querySelector(
+                        'h1, h2, h3, h4, h5, h6, .title, .name, .heading, ' +
+                        '.plan-name, .product-name, .package-name, ' +
+                        '[class*="title"], [class*="name"], [class*="heading"], [class*="label"]'
+                    );
+                    if (titleEl) {
+                        const text = titleEl.textContent.trim().replace(/\s+/g, ' ');
+                        // 如果标题太长，尝试取第一行
+                        const firstLine = text.split(/[，,]/)[0].trim();
+                        if (SNIPER._isValidPlanName(firstLine)) {
+                            plans.add(firstLine);
+                        } else if (SNIPER._isValidPlanName(text)) {
+                            plans.add(text);
+                        }
                     }
                 });
             } catch (e) { /* ignore */ }
         });
 
-        // 常见套餐名
-        const knownPlans = ['Lite', 'Pro', 'Max', '标准版', '高级版'];
+        // 策略2：查找孤立的标题元素（不在卡片选择器范围内的情况）
+        try {
+            document.querySelectorAll('h2, h3, .plan-name, .product-name, [class*="plan-name"], [class*="product-name"]')
+                .forEach(el => {
+                    const text = el.textContent.trim().replace(/\s+/g, ' ');
+                    if (SNIPER._isValidPlanName(text)) {
+                        plans.add(text);
+                    }
+                });
+        } catch (e) { /* ignore */ }
+
+        // 策略3：已知套餐名兜底
+        const knownPlans = ['Lite', 'Pro', 'Max', '标准版', '高级版', '入门版', '企业版'];
         knownPlans.forEach(name => {
-            if (document.body.innerText.includes(name)) plans.add(name);
+            if (document.body.innerText.includes(name)) {
+                plans.add(name);
+            }
         });
 
-        plans.forEach(plan => {
+        // 填充下拉框
+        const sorted = Array.from(plans).sort();
+        sorted.forEach(plan => {
             const opt = document.createElement('option');
             opt.value = plan;
             opt.textContent = plan;
@@ -1419,34 +1461,8 @@
             sel.appendChild(opt);
         });
 
-        // 也尝试读取按钮文字识别套餐
-        const buyBtnSelectors = 'button, a, .btn, [class*="buy"], [class*="purchase"]';
-        const addedOptions = new Set();
-        // 记录已有 option 的 value，避免重复添加
-        for (const opt of sel.options) { addedOptions.add(opt.value); }
-        try {
-            document.querySelectorAll(buyBtnSelectors).forEach(btn => {
-                const text = btn.textContent.trim();
-                if (text.includes('购买') || text.includes('订阅') || text.includes('抢购')) {
-                    const parentText = btn.closest('div,section,li')?.textContent?.trim()?.substring(0, 50);
-                    if (parentText) {
-                        for (const name of knownPlans) {
-                            if (parentText.includes(name) && !addedOptions.has(name)) {
-                                plans.add(name);
-                                addedOptions.add(name);
-                                const opt = document.createElement('option');
-                                opt.value = name;
-                                opt.textContent = name + ' (从按钮识别)';
-                                sel.appendChild(opt);
-                            }
-                        }
-                    }
-                }
-            });
-        } catch (e) { /* ignore button-recognition errors */ }
-
-        const count = plans.size;
-        SNIPER.info(`扫描完成，发现 ${count} 个可能的套餐`);
+        const count = sel.options.length - 1; // 排除占位项
+        SNIPER.info(`扫描完成，发现 ${count} 个套餐`);
         if (currentValue && plans.has(currentValue)) {
             sel.value = currentValue;
         }
