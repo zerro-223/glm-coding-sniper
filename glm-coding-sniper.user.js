@@ -205,25 +205,32 @@
 
     // XMLHttpRequest 劫持
     SNIPER.intercept._hijackXHR = function () {
-        const self = SNIPER.intercept;
+        var self = SNIPER.intercept;
+        // 捕获 setRequestHeader 设置的认证头
+        var origSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+        XMLHttpRequest.prototype.setRequestHeader = function (header, value) {
+            if (!this._capturedHeaders) this._capturedHeaders = {};
+            this._capturedHeaders[header] = value;
+            return origSetRequestHeader.apply(this, arguments);
+        };
         self._origXHRSendToString = XMLHttpRequest.prototype.send.toString;
         XMLHttpRequest.prototype.send = function (body) {
-            const xhr = this;
+            var xhr = this;
             // 捕获请求
-            const url = (xhr._url || '');
+            var url = (xhr._url || '');
             if (url.includes('preview') || url.includes('order') || url.includes('purchase')
                 || url.includes('subscribe') || url.includes('create') || url.includes('pay')) {
                 if (body) {
                     try {
-                        const parsed = typeof body === 'string' ? JSON.parse(body) : body;
+                        var parsed = typeof body === 'string' ? JSON.parse(body) : body;
                         STATE.capturedParams = {
-                            url,
+                            url: url,
                             body: parsed,
-                            headers: {},
+                            headers: xhr._capturedHeaders ? Object.assign({}, xhr._capturedHeaders) : {},
                             method: xhr._method || 'POST',
                             capturedAt: Date.now(),
                         };
-                        SNIPER.info(`捕获 XHR: ${url}`);
+                        SNIPER.info('捕获 XHR: ' + url);
                     } catch (e) { /* ignore */ }
                 }
             }
@@ -410,11 +417,22 @@
         if (!STATE.capturedParams) {
             return Promise.reject(new Error('无捕获的请求参数'));
         }
-        const params = STATE.capturedParams;
-        const headers = {
+        var params = STATE.capturedParams;
+        var headers = {
             'Content-Type': 'application/json',
             ...SNIPER.antidetect.randomizeHeaders(),
         };
+        // 保留原始请求的认证头（Authorization, X-Auth-Token 等）
+        if (params.headers) {
+            for (var key in params.headers) {
+                if (params.headers.hasOwnProperty(key)) {
+                    var lower = key.toLowerCase();
+                    if (lower === 'authorization' || lower === 'x-auth-token' || lower === 'cookie') {
+                        headers[key] = params.headers[key];
+                    }
+                }
+            }
+        }
         // 单请求超时：10 秒无响应则 abort，防止挂起阻塞 race
         const timeoutId = setTimeout(() => controller.abort(), 10000);
         return fetch(params.url, {
