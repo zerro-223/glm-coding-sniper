@@ -586,7 +586,16 @@
             });
         }
 
-        // 触发支付弹窗恢复 (Task 8 将添加 paymentRecovery 模块)
+        // 页面上方横幅通知
+        SNIPER.ui.showBanner(`✅ 抢购成功! bizId: ${bizId}，请立即支付`, 'success');
+
+        // 恢复按钮状态
+        if (SNIPER.ui._dom && SNIPER.ui._dom.btnRush) {
+            SNIPER.ui._dom.btnRush.classList.remove('running');
+            SNIPER.ui._dom.btnRush.textContent = '⚡ 立即抢购';
+        }
+
+        // 触发支付弹窗恢复
         if (SNIPER.paymentRecovery) SNIPER.paymentRecovery.attempt(bizId);
     };
 
@@ -623,6 +632,12 @@
         });
 
         SNIPER.info(`引擎已启动 (${SNIPER.engine._getConcurrency()}路并发)`);
+
+        // 按钮状态反馈
+        if (SNIPER.ui._dom && SNIPER.ui._dom.btnRush) {
+            SNIPER.ui._dom.btnRush.classList.add('running');
+            SNIPER.ui._dom.btnRush.textContent = '⏳ 抢购中...';
+        }
     };
 
     // 停止引擎
@@ -635,6 +650,319 @@
         SNIPER.engine._controllers = [];
         SNIPER.updateStatus('idle', '已停止');
         SNIPER.info('引擎已停止');
+
+        // 恢复按钮状态
+        if (SNIPER.ui._dom && SNIPER.ui._dom.btnRush) {
+            SNIPER.ui._dom.btnRush.classList.remove('running');
+            SNIPER.ui._dom.btnRush.textContent = '⚡ 立即抢购';
+        }
+    };
+
+    // ============ 高精度定时器 ============
+    SNIPER.timer = {
+        _rafId: null,
+        _targetTime: 0,
+        _callback: null,
+        _calibrated: false,
+    };
+
+    // 服务器时间校准
+    SNIPER.timer.calibrate = async function () {
+        SNIPER.info('正在校准服务器时间...');
+        const t0 = performance.now();
+        try {
+            const resp = await fetch(window.location.origin + '/', {
+                method: 'HEAD',
+                cache: 'no-store',
+                headers: SNIPER.antidetect.randomizeHeaders(),
+            });
+            const t1 = performance.now();
+            const serverDate = resp.headers.get('Date');
+            if (serverDate) {
+                const serverTime = new Date(serverDate).getTime();
+                const rtt = t1 - t0;
+                const estimatedServerTime = serverTime + rtt / 2;
+                STATE.serverTimeOffset = estimatedServerTime - Date.now();
+                SNIPER.success(`服务器时间已校准 (偏差: ${STATE.serverTimeOffset > 0 ? '+' : ''}${Math.round(STATE.serverTimeOffset)}ms, RTT: ${Math.round(rtt)}ms)`);
+                SNIPER.timer._calibrated = true;
+                return STATE.serverTimeOffset;
+            }
+        } catch (e) {
+            SNIPER.warn('服务器时间校准失败，使用本地时间: ' + e.message);
+        }
+        STATE.serverTimeOffset = 0;
+        SNIPER.timer._calibrated = true;
+        return 0;
+    };
+
+    // 获取当前服务器时间
+    SNIPER.timer.now = function () {
+        return Date.now() + STATE.serverTimeOffset;
+    };
+
+    // 解析时间字符串 "HH:MM:SS" 为今天的毫秒时间戳
+    SNIPER.timer._parseTimeStr = function (timeStr) {
+        const parts = timeStr.split(':').map(Number);
+        const now = new Date();
+        const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(),
+            parts[0] || 9, parts[1] || 59, parts[2] || 58, 0);
+        return target.getTime();
+    };
+
+    // 高精度定时：rAF + performance.now
+    SNIPER.timer.schedule = function (timeStr, callback) {
+        const targetLocal = SNIPER.timer._parseTimeStr(timeStr);
+        // 加上服务器时间偏差得到期望触发时的服务器时间对应本地时间
+        const effectiveLocal = targetLocal - STATE.serverTimeOffset - SNIPER.config.leadMs;
+        SNIPER.timer._targetTime = effectiveLocal;
+        SNIPER.timer._callback = callback;
+
+        SNIPER.info(`已设置定时触发: ${timeStr} (提前 ${SNIPER.config.leadMs}ms)`);
+        SNIPER.updateStatus('monitoring', `🟡 监控中，目标时间: ${timeStr}`);
+
+        const tick = () => {
+            const diff = effectiveLocal - Date.now();
+
+            if (diff <= 0) {
+                SNIPER.info('⏰ 时间到! 触发抢购');
+                SNIPER.timer._rafId = null;
+                if (callback) callback();
+                return;
+            }
+
+            if (diff < 10) {
+                // 最后 10ms 使用微任务精度
+                setTimeout(tick, 0);
+            } else {
+                SNIPER.timer._rafId = requestAnimationFrame(tick);
+            }
+        };
+
+        SNIPER.timer._rafId = requestAnimationFrame(tick);
+    };
+
+    // 取消定时
+    SNIPER.timer.cancel = function () {
+        if (SNIPER.timer._rafId) {
+            cancelAnimationFrame(SNIPER.timer._rafId);
+            SNIPER.timer._rafId = null;
+        }
+        SNIPER.timer._callback = null;
+        SNIPER.info('定时已取消');
+    };
+
+    // ============ 支付弹窗恢复 ============
+    SNIPER.paymentRecovery = {
+        _attempts: 0,
+        _maxAttempts: 4,
+    };
+
+    SNIPER.paymentRecovery.attempt = function (bizId) {
+        SNIPER.paymentRecovery._attempts = 0;
+        SNIPER.paymentRecovery._tryNext(bizId);
+    };
+
+    SNIPER.paymentRecovery._tryNext = function (bizId) {
+        const attempt = SNIPER.paymentRecovery._attempts;
+        SNIPER.paymentRecovery._attempts++;
+
+        if (attempt >= SNIPER.paymentRecovery._maxAttempts) {
+            SNIPER.warn('所有弹窗恢复策略已尝试完毕');
+            return;
+        }
+
+        SNIPER.info(`弹窗恢复策略 ${attempt + 1}/${SNIPER.paymentRecovery._maxAttempts}`);
+
+        switch (attempt) {
+            case 0:
+                // 第1层：清除遮罩和弹窗包装器
+                document.querySelectorAll('.el-dialog__wrapper, .v-modal, .el-overlay, '
+                    + '[class*="modal"], [class*="overlay"], [class*="mask"]')
+                    .forEach(el => {
+                        if (el.style.display !== 'none') el.remove();
+                    });
+                SNIPER.debug('已清除遮罩层');
+                setTimeout(() => SNIPER.paymentRecovery._checkAndRetry(bizId), 500);
+                break;
+
+            case 1:
+                // 第2层：重新点击购买按钮
+                (function () {
+                    const buyBtns = document.querySelectorAll(
+                        'button, a, .btn, [class*="buy"], [class*="purchase"], [class*="pay"]');
+                    for (const btn of buyBtns) {
+                        const text = btn.textContent.trim();
+                        if (text.includes('购买') || text.includes('支付') || text.includes('订阅')
+                            || text.includes('确认') || text.includes('下单')) {
+                            btn.click();
+                            SNIPER.debug(`重新触发按钮: ${text}`);
+                            break;
+                        }
+                    }
+                })();
+                setTimeout(() => SNIPER.paymentRecovery._checkAndRetry(bizId), 1000);
+                break;
+
+            case 2:
+                // 第3层：直接请求支付链接
+                (function () {
+                    const payUrls = [
+                        '/api/pay/' + bizId,
+                        '/api/order/' + bizId + '/pay',
+                        '/api/payment?bizId=' + bizId,
+                    ];
+                    payUrls.forEach(url => {
+                        fetch(url, { credentials: 'include' })
+                            .then(r => r.json())
+                            .then(data => {
+                                const payUrl = data.payUrl || data.url || data.link;
+                                if (payUrl) {
+                                    SNIPER.success(`获取到支付链接: ${payUrl}`);
+                                    window.open(payUrl, '_blank');
+                                }
+                            }).catch(() => {});
+                    });
+                })();
+                setTimeout(() => SNIPER.paymentRecovery._checkAndRetry(bizId), 2000);
+                break;
+
+            case 3:
+                // 第4层：Vue 组件树兜底
+                SNIPER.paymentRecovery._vuePatch();
+                break;
+        }
+    };
+
+    SNIPER.paymentRecovery._checkAndRetry = function (bizId) {
+        // 检查支付弹窗是否出现
+        const dialog = document.querySelector('.el-dialog__wrapper, [class*="payment"], '
+            + '[class*="pay-dialog"], [class*="checkout"]');
+        if (!dialog || dialog.style.display === 'none') {
+            SNIPER.paymentRecovery._tryNext(bizId);
+        } else {
+            SNIPER.success('支付弹窗已出现');
+        }
+    };
+
+    SNIPER.paymentRecovery._vuePatch = function () {
+        SNIPER.debug('尝试 Vue 组件树兜底...');
+        // 遍历所有 DOM 元素的 Vue 实例引用
+        const walk = function (el) {
+            const vue = el.__vue__ || el.__vue_app__ || el._vueInstance;
+            if (vue) {
+                SNIPER.paymentRecovery._patchVue(vue);
+            }
+            if (el.childNodes) {
+                el.childNodes.forEach(walk);
+            }
+        };
+        try { walk(document.body); } catch (e) { /* ignore */ }
+
+        // 也尝试从根节点
+        const rootEl = document.getElementById('app') || document.getElementById('__nuxt')
+            || document.getElementById('__next') || document.body.firstElementChild;
+        if (rootEl) {
+            const vueApp = rootEl.__vue_app__;
+            if (vueApp && vueApp.config && vueApp.config.globalProperties) {
+                SNIPER.debug('发现 Vue app 实例');
+            }
+        }
+
+        SNIPER.warn('Vue patch 已完成（如仍未出现弹窗，请手动操作）');
+    };
+
+    SNIPER.paymentRecovery._patchVue = function (vue) {
+        try {
+            if (vue.payDialogVisible !== undefined) {
+                vue.payDialogVisible = true;
+                SNIPER.debug('设置 payDialogVisible = true');
+            }
+            if (vue.isServerBusy !== undefined) {
+                vue.isServerBusy = false;
+                SNIPER.debug('设置 isServerBusy = false');
+            }
+            if (vue.paymentVisible !== undefined) {
+                vue.paymentVisible = true;
+                SNIPER.debug('设置 paymentVisible = true');
+            }
+        } catch (e) { /* ignore */ }
+    };
+
+    // ============ 验证码监控 ============
+    SNIPER.captchaMonitor = {
+        _observer: null,
+        _watching: false,
+    };
+
+    SNIPER.captchaMonitor.watch = function () {
+        if (SNIPER.captchaMonitor._watching) return;
+        SNIPER.captchaMonitor._watching = true;
+
+        SNIPER.captchaMonitor._observer = new MutationObserver((mutations) => {
+            mutations.forEach(m => {
+                m.addedNodes.forEach(node => {
+                    if (node.nodeType !== 1) return;
+                    // 检测验证码相关元素
+                    const captchaSelectors = [
+                        '.captcha', '#captcha', '[class*="captcha"]',
+                        '[class*="verify"]', '[id*="captcha"]',
+                        'img[src*="captcha"]', 'img[src*="verify"]',
+                        '.slider-captcha', '.geetest', '.yidun',
+                        'canvas[class*="captcha"]',
+                    ];
+                    let captchaEl = null;
+                    for (const sel of captchaSelectors) {
+                        captchaEl = node.matches && node.matches(sel) ? node : node.querySelector && node.querySelector(sel);
+                        if (captchaEl) break;
+                    }
+                    if (captchaEl) {
+                        SNIPER.warn('⚠️ 检测到验证码! 请手动完成验证');
+                        SNIPER.updateStatus('running', '⚠️ 请手动完成验证码!');
+                        // 高亮验证码区域
+                        captchaEl.style.outline = '3px solid #ff6b6b';
+                        captchaEl.style.animation = 'glm-flash 0.5s infinite alternate';
+                        // 播放提示音
+                        try {
+                            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                            const osc = ctx.createOscillator();
+                            const gain = ctx.createGain();
+                            osc.connect(gain); gain.connect(ctx.destination);
+                            osc.frequency.value = 600;
+                            osc.type = 'square';
+                            gain.gain.value = 0.3;
+                            osc.start(); osc.stop(ctx.currentTime + 0.3);
+                        } catch (e) { /* ignore */ }
+                        // 浏览器通知
+                        if (typeof GM_notification === 'function') {
+                            GM_notification({
+                                title: '需要验证码!',
+                                text: 'GLM 抢购助手检测到验证码，请手动完成',
+                                timeout: 5000,
+                            });
+                        } else if ('Notification' in window && Notification.permission === 'granted') {
+                            new Notification('需要验证码!', {
+                                body: 'GLM 抢购助手检测到验证码，请手动完成',
+                            });
+                        }
+                    }
+                });
+            });
+        });
+
+        SNIPER.captchaMonitor._observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+        });
+
+        SNIPER.debug('验证码监控已启动');
+    };
+
+    SNIPER.captchaMonitor.stop = function () {
+        if (SNIPER.captchaMonitor._observer) {
+            SNIPER.captchaMonitor._observer.disconnect();
+            SNIPER.captchaMonitor._observer = null;
+        }
+        SNIPER.captchaMonitor._watching = false;
     };
 
     // ============ 控制面板 UI ============
@@ -771,6 +1099,20 @@
             .btn-danger:hover { background: rgba(231,76,60,0.5); }
             .minimized .body { display:none; }
             .shortcut-hint { font-size:10px;color:#555;text-align:center;margin-top:4px; }
+            @keyframes glm-flash {
+                from { outline-color: #ff6b6b; }
+                to { outline-color: #ffe66d; }
+            }
+            @keyframes glm-pulse {
+                0%, 100% { box-shadow: 0 0 0 0 rgba(255,107,107,0.4); }
+                50% { box-shadow: 0 0 0 8px rgba(255,107,107,0); }
+            }
+            .btn-primary.running {
+                animation: glm-pulse 1.5s infinite;
+            }
+            ::-webkit-scrollbar { width: 4px; }
+            ::-webkit-scrollbar-track { background: transparent; }
+            ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
         `;
         shadow.appendChild(style);
 
@@ -1004,6 +1346,37 @@
         bar.textContent = (icons[status] || '') + ' ' + bar.textContent;
     };
 
+    // 页面上方横幅通知
+    SNIPER.ui.showBanner = function (msg, type) {
+        type = type || 'info';
+        const banner = document.createElement('div');
+        banner.style.cssText = [
+            'position:fixed;top:0;left:0;right:0;z-index:9999999;',
+            'padding:12px 24px;text-align:center;font-size:14px;font-weight:bold;',
+            'color:#fff;',
+            'background:' + (type === 'success'
+                ? 'linear-gradient(90deg,#11998e,#38ef7d)'
+                : type === 'error'
+                    ? 'linear-gradient(90deg,#cb2d3e,#ef473a)'
+                    : 'linear-gradient(90deg,#ff6b6b,#ee5a24)') + ';',
+        ].join('');
+        banner.textContent = msg;
+
+        // 动画：从上方滑入
+        banner.style.transform = 'translateY(-100%)';
+        banner.style.transition = 'transform 0.3s ease';
+        document.body.appendChild(banner);
+        requestAnimationFrame(() => {
+            banner.style.transform = 'translateY(0)';
+        });
+
+        // 4 秒后滑出移除
+        setTimeout(() => {
+            banner.style.transform = 'translateY(-100%)';
+            setTimeout(() => banner.remove(), 300);
+        }, 4000);
+    };
+
     // 扫描套餐
     SNIPER.scanPlans = function () {
         const sel = SNIPER.ui._dom && SNIPER.ui._dom.selPlan;
@@ -1099,5 +1472,140 @@
         return host;
     };
 
+    // ============ 集成方法 ============
+
+    // 开始监控（定时模式）
+    SNIPER.startMonitoring = async function () {
+        if (STATE.status === 'running') {
+            SNIPER.warn('已在运行中');
+            return;
+        }
+        // 确保拦截器已安装
+        if (!SNIPER.intercept._active) {
+            SNIPER.intercept.install();
+        }
+        // 确保有请求参数
+        if (!STATE.capturedParams) {
+            SNIPER.warn('尚未捕获请求参数，请先在页面点击一次购买按钮');
+            SNIPER.updateStatus('idle', '⚠️ 请先点击购买按钮以捕获参数，再点「开始监控」');
+            return;
+        }
+        // 校准时间
+        await SNIPER.timer.calibrate();
+        // 启动验证码监控
+        SNIPER.captchaMonitor.watch();
+        // 设置定时器
+        SNIPER.timer.schedule(SNIPER.config.triggerTime, () => {
+            SNIPER.engine.start();
+        });
+        SNIPER.updateStatus('monitoring', `🟡 监控中，目标时间: ${SNIPER.config.triggerTime}`);
+    };
+
+    // 立即抢购
+    SNIPER.rushNow = function () {
+        if (STATE.status === 'running') {
+            SNIPER.warn('已在运行中');
+            return;
+        }
+        if (!SNIPER.intercept._active) {
+            SNIPER.intercept.install();
+        }
+        if (!STATE.capturedParams) {
+            SNIPER.warn('请先在页面点击一次购买按钮以捕获参数');
+            SNIPER.updateStatus('idle', '⚠️ 请先点击购买按钮');
+            return;
+        }
+        // 异步校准时间，校准完成后启动
+        SNIPER.timer.calibrate().then(() => {
+            SNIPER.captchaMonitor.watch();
+            SNIPER.engine.start();
+        });
+    };
+
+    // 重置
+    SNIPER.reset = function () {
+        SNIPER.engine.stop();
+        SNIPER.timer.cancel();
+        SNIPER.captchaMonitor.stop();
+        STATE.capturedParams = null;
+        STATE.retryCount = 0;
+        STATE.bizId = null;
+        STATE.status = 'idle';
+        SNIPER.updateStatus('idle', '🟢 等待操作...');
+        SNIPER.info('已重置');
+    };
+
+    // 请求通知权限
+    SNIPER.requestNotificationPermission = function () {
+        if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission().then(perm => {
+                SNIPER.info(`通知权限: ${perm}`);
+            });
+        }
+    };
+
+    // 恢复支付弹窗 (从引擎成功回调触发)
+    SNIPER.recoverPayment = function (bizId) {
+        SNIPER.paymentRecovery.attempt(bizId);
+    };
+
+    // ============ 键盘快捷键 ============
+    document.addEventListener('keydown', function (e) {
+        if (!e.altKey) return;
+        switch (e.key.toLowerCase()) {
+            case 's':
+                e.preventDefault();
+                SNIPER.startMonitoring();
+                break;
+            case 'x':
+                e.preventDefault();
+                SNIPER.reset();
+                break;
+            case 'h':
+                e.preventDefault();
+                (function () {
+                    const host = SNIPER.ui._dom && SNIPER.ui._dom.host;
+                    if (host) {
+                        if (host.style.display === 'none') {
+                            host.style.display = '';
+                            // 移除浮动按钮
+                            const toggle = document.getElementById('glm-sniper-toggle');
+                            if (toggle) toggle.remove();
+                        } else {
+                            host.style.display = 'none';
+                            SNIPER.ui._showToggle = SNIPER.ui.createToggleButton();
+                        }
+                        SNIPER.debug('切换面板显示');
+                    }
+                })();
+                break;
+        }
+    });
+
+    // ============ 启动 ============
+    function init() {
+        // 1. 安装拦截器（在 document-start 时，documentElement 可能尚未就绪）
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                SNIPER.intercept.install();
+                SNIPER.antidetect.install();
+            });
+        } else {
+            SNIPER.intercept.install();
+            SNIPER.antidetect.install();
+        }
+
+        // 2. 等页面加载完成后初始化 UI
+        window.addEventListener('load', () => {
+            SNIPER.ui.init();
+            SNIPER.requestNotificationPermission();
+            // 延迟扫描套餐，等 Vue/React 渲染完成
+            setTimeout(() => SNIPER.scanPlans(), 2000);
+            setTimeout(() => SNIPER.scanPlans(), 5000);
+            SNIPER.info('✅ GLM 抢购助手已就绪，配置套餐后点击「开始监控」或「立即抢购」');
+        });
+    }
+
+    init();
     console.log('[GLM抢购] 脚本已注入 (v1.0.0)');
 })();
